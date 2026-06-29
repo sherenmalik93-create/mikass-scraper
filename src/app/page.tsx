@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
+import Hls from "hls.js";
 import {
   Search,
   Play,
@@ -19,6 +20,12 @@ import {
   BookOpen,
   Terminal,
   Globe,
+  MonitorPlay,
+  X,
+  Maximize2,
+  Minimize2,
+  Volume2,
+  VolumeX,
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -70,7 +77,235 @@ type SourceType = "auto" | "justhd" | "vidsrc" | "vidfast";
 type TabType = "scraper" | "vidlink" | "test" | "docs";
 
 /* ------------------------------------------------------------------ */
-/*  Component                                                          */
+/*  HLS Player Component                                               */
+/* ------------------------------------------------------------------ */
+
+function HlsPlayer({
+  url,
+  title,
+  onClose,
+}: {
+  url: string;
+  title?: string;
+  onClose: () => void;
+}) {
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const hlsRef = useRef<Hls | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [playing, setPlaying] = useState(false);
+  const [muted, setMuted] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [currentTime, setCurrentTime] = useState("0:00");
+  const [duration, setDuration] = useState("0:00");
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video || !url) return;
+
+    // Destroy previous instance
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+      hlsRef.current = null;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        xhrSetup: (xhr) => {
+          xhr.withCredentials = false;
+        },
+      });
+      hlsRef.current = hls;
+
+      hls.loadSource(url);
+      hls.attachMedia(video);
+
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        setLoading(false);
+        video.play().then(() => setPlaying(true)).catch(() => {});
+      });
+
+      hls.on(Hls.Events.ERROR, (_event, data) => {
+        if (data.fatal) {
+          setLoading(false);
+          switch (data.type) {
+            case Hls.ErrorTypes.NETWORK_ERROR:
+              setError(`Network error: ${data.details}. The stream might be geo-blocked or the URL expired.`);
+              hls.startLoad();
+              break;
+            case Hls.ErrorTypes.MEDIA_ERROR:
+              setError(`Media error: ${data.details}. Trying to recover...`);
+              hls.recoverMediaError();
+              break;
+            default:
+              setError(`Fatal error: ${data.details}`);
+              hls.destroy();
+              break;
+          }
+        }
+      });
+    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
+      // Safari native HLS
+      video.src = url;
+      video.addEventListener("loadedmetadata", () => {
+        setLoading(false);
+        video.play().then(() => setPlaying(true)).catch(() => {});
+      });
+    } else {
+      setError("HLS is not supported in this browser.");
+      setLoading(false);
+    }
+
+    return () => {
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+        hlsRef.current = null;
+      }
+    };
+  }, [url]);
+
+  const togglePlay = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    if (video.paused) {
+      video.play().then(() => setPlaying(true)).catch(() => {});
+    } else {
+      video.pause();
+      setPlaying(false);
+    }
+  };
+
+  const toggleMute = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = !video.muted;
+    setMuted(video.muted);
+  };
+
+  const toggleFullscreen = () => {
+    const container = containerRef.current;
+    if (!container) return;
+    if (!document.fullscreenElement) {
+      container.requestFullscreen().then(() => setFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setFullscreen(false)).catch(() => {});
+    }
+  };
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onTime = () => setCurrentTime(formatTime(video.currentTime));
+    const onDur = () => setDuration(formatTime(video.duration));
+    const onPlay = () => setPlaying(true);
+    const onPause = () => setPlaying(false);
+    video.addEventListener("timeupdate", onTime);
+    video.addEventListener("durationchange", onDur);
+    video.addEventListener("play", onPlay);
+    video.addEventListener("pause", onPause);
+    return () => {
+      video.removeEventListener("timeupdate", onTime);
+      video.removeEventListener("durationchange", onDur);
+      video.removeEventListener("play", onPlay);
+      video.removeEventListener("pause", onPause);
+    };
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      className="bg-black rounded-xl overflow-hidden border border-zinc-700 relative group"
+    >
+      {/* Close button */}
+      <button
+        onClick={onClose}
+        className="absolute top-2 right-2 z-20 p-1.5 rounded-full bg-black/60 hover:bg-black/80 transition-colors"
+        title="Close player"
+      >
+        <X className="w-4 h-4 text-white" />
+      </button>
+
+      {/* Title bar */}
+      {title && (
+        <div className="absolute top-2 left-2 z-20 bg-black/60 rounded-lg px-2 py-1">
+          <p className="text-xs text-white font-medium truncate max-w-[300px]">{title}</p>
+        </div>
+      )}
+
+      {/* Video element */}
+      <video
+        ref={videoRef}
+        className="w-full aspect-video bg-black cursor-pointer"
+        onClick={togglePlay}
+        playsInline
+      />
+
+      {/* Loading overlay */}
+      {loading && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10">
+          <div className="text-center">
+            <Loader2 className="w-8 h-8 text-yellow-400 animate-spin mx-auto" />
+            <p className="text-sm text-zinc-300 mt-2">Loading stream...</p>
+          </div>
+        </div>
+      )}
+
+      {/* Error overlay */}
+      {error && (
+        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
+          <div className="text-center max-w-md px-4">
+            <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-3">
+              <X className="w-6 h-6 text-red-400" />
+            </div>
+            <p className="text-red-400 font-semibold mb-1">Playback Error</p>
+            <p className="text-xs text-zinc-400">{error}</p>
+            <p className="text-[10px] text-zinc-500 mt-2">Try using the proxied URL or a different source.</p>
+          </div>
+        </div>
+      )}
+
+      {/* Controls bar */}
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 to-transparent px-4 py-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button onClick={togglePlay} className="p-1 hover:scale-110 transition-transform">
+              {playing ? (
+                <svg className="w-5 h-5 text-white" fill="white" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
+              ) : (
+                <svg className="w-5 h-5 text-white" fill="white" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>
+              )}
+            </button>
+            <button onClick={toggleMute} className="p-1 hover:scale-110 transition-transform">
+              {muted ? <VolumeX className="w-4 h-4 text-white" /> : <Volume2 className="w-4 h-4 text-white" />}
+            </button>
+            <span className="text-xs text-zinc-300 font-mono">
+              {currentTime} / {duration}
+            </span>
+          </div>
+          <button onClick={toggleFullscreen} className="p-1 hover:scale-110 transition-transform">
+            {fullscreen ? <Minimize2 className="w-4 h-4 text-white" /> : <Maximize2 className="w-4 h-4 text-white" />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function formatTime(s: number): string {
+  if (!s || !isFinite(s)) return "0:00";
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Main Component                                                     */
 /* ------------------------------------------------------------------ */
 
 export default function VidfastPage() {
@@ -87,6 +322,26 @@ export default function VidfastPage() {
   const [copied, setCopied] = useState<string | null>(null);
   const [showRaw, setShowRaw] = useState(false);
   const [activeProvider, setActiveProvider] = useState<"vidfast" | "vidlink">("vidfast");
+
+  // Player state
+  const [playerUrl, setPlayerUrl] = useState<string | null>(null);
+  const [playerTitle, setPlayerTitle] = useState<string>("");
+
+  const playStream = (url: string, title?: string) => {
+    // If the URL is relative (proxied), use as-is. If absolute, wrap through proxy.
+    let playUrl = url;
+    if (url.startsWith("http")) {
+      // Direct URL — route through our CORS proxy
+      playUrl = `/api/proxy/m3u8?url=${encodeURIComponent(url)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`;
+    }
+    setPlayerUrl(playUrl);
+    setPlayerTitle(title || "");
+  };
+
+  const closePlayer = () => {
+    setPlayerUrl(null);
+    setPlayerTitle("");
+  };
 
   const scrape = useCallback(async () => {
     setLoading(true);
@@ -145,6 +400,19 @@ export default function VidfastPage() {
     </button>
   );
 
+  const PlayBtn = ({ url, title, color = "green" }: { url: string; title?: string; color?: string }) => (
+    <button
+      onClick={() => playStream(url, title)}
+      className={cn(
+        "p-1.5 rounded-md transition-colors",
+        color === "green" ? "bg-green-500/20 hover:bg-green-500/30" : color === "yellow" ? "bg-yellow-500/20 hover:bg-yellow-500/30" : "bg-blue-500/20 hover:bg-blue-500/30"
+      )}
+      title="Play stream"
+    >
+      <MonitorPlay className={cn("w-3 h-3", color === "green" ? "text-green-400" : color === "yellow" ? "text-yellow-400" : "text-blue-400")} />
+    </button>
+  );
+
   return (
     <div className="min-h-screen bg-zinc-950 text-white">
       {/* Header */}
@@ -187,6 +455,23 @@ export default function VidfastPage() {
       </div>
 
       <div className="max-w-7xl mx-auto px-4 py-6">
+        {/* ==================== PLAYER (floating) ==================== */}
+        {playerUrl && (
+          <div className="mb-6">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <MonitorPlay className="w-4 h-4 text-green-400" />
+                <span className="text-sm font-semibold text-green-400">Now Playing</span>
+                {playerTitle && <span className="text-xs text-zinc-400">— {playerTitle}</span>}
+              </div>
+              <button onClick={closePlayer} className="text-xs text-zinc-500 hover:text-white transition-colors flex items-center gap-1">
+                <X className="w-3 h-3" /> Close
+              </button>
+            </div>
+            <HlsPlayer url={playerUrl} title={playerTitle} onClose={closePlayer} />
+          </div>
+        )}
+
         {/* ==================== SCRAPER TAB ==================== */}
         {tab === "scraper" && (
           <div className="space-y-6">
@@ -283,10 +568,10 @@ export default function VidfastPage() {
 
               <div className="flex flex-wrap gap-2">
                 {([
-                  { a: "scrape" as ActionType, label: "Full Scrape", desc: "Meta + m3u8 + raw" },
-                  { a: "streams" as ActionType, label: "Streams Only", desc: "Fast m3u8 URLs" },
-                  { a: "raw" as ActionType, label: "Raw M3U8", desc: "Raw playlist content" },
-                  { a: "multi" as ActionType, label: "All Sources", desc: "Try all providers" },
+                  { a: "scrape" as ActionType, label: "Full Scrape" },
+                  { a: "streams" as ActionType, label: "Streams Only" },
+                  { a: "raw" as ActionType, label: "Raw M3U8" },
+                  { a: "multi" as ActionType, label: "All Sources" },
                 ]).map((item) => (
                   <button
                     key={item.a}
@@ -386,6 +671,7 @@ export default function VidfastPage() {
                           <span className="text-sm text-zinc-300">{s.quality}</span>
                         </div>
                         <div className="flex gap-1">
+                          <PlayBtn url={s.url} title={result.meta?.title || result.title} color="green" />
                           <CopyBtn text={s.url} id={`src-${i}`} />
                           <a
                             href={s.url}
@@ -417,6 +703,7 @@ export default function VidfastPage() {
                             {s.quality}
                           </Badge>
                           <p className="text-xs font-mono text-zinc-400 truncate flex-1">{s.url}</p>
+                          <PlayBtn url={s.url} title={result.meta?.title || result.title} color="blue" />
                           <CopyBtn text={s.url} id={`proxy-${i}`} />
                         </div>
                       ))}
@@ -434,6 +721,7 @@ export default function VidfastPage() {
                       <code className="text-xs text-yellow-300 font-mono flex-1 break-all">
                         {result.proxyM3u8Url}
                       </code>
+                      <PlayBtn url={result.proxyM3u8Url} title={result.meta?.title || result.title} color="yellow" />
                       <CopyBtn text={result.proxyM3u8Url} id="proxy-master" />
                     </div>
                   </div>
@@ -492,9 +780,12 @@ export default function VidfastPage() {
                       {mr.success && mr.proxiedSources[0] && (
                         <div className="mt-2">
                           <p className="text-xs text-zinc-500 mb-1">Master URL (proxied):</p>
-                          <code className="text-xs font-mono text-blue-400 break-all">
-                            {mr.proxiedSources[0].url}
-                          </code>
+                          <div className="flex items-center gap-2">
+                            <code className="text-xs font-mono text-blue-400 break-all flex-1">
+                              {mr.proxiedSources[0].url}
+                            </code>
+                            <PlayBtn url={mr.proxiedSources[0].url} title={mr.source} color="blue" />
+                          </div>
                         </div>
                       )}
                       {mr.rawM3u8 && (
@@ -588,7 +879,7 @@ export default function VidfastPage() {
 
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => { setAction("streams"); }}
+                  onClick={() => setAction("streams")}
                   className={cn(
                     "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
                     action === "streams" ? "bg-blue-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
@@ -597,7 +888,7 @@ export default function VidfastPage() {
                   Streams Only
                 </button>
                 <button
-                  onClick={() => { setAction("raw"); }}
+                  onClick={() => setAction("raw")}
                   className={cn(
                     "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
                     action === "raw" ? "bg-blue-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
@@ -608,7 +899,6 @@ export default function VidfastPage() {
               </div>
             </div>
 
-            {/* Show results for vidlink tab */}
             {result?.success && (result.sources?.length ?? 0) > 0 && (
               <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
                 <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
@@ -629,6 +919,7 @@ export default function VidfastPage() {
                           <span className="text-sm text-zinc-300">{s.quality}</span>
                         </div>
                         <div className="flex gap-1">
+                          <PlayBtn url={s.url} title={result.meta?.title || result.title} color="blue" />
                           <CopyBtn text={s.url} id={`vl-${i}`} />
                           <a href={s.url} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors">
                             <ExternalLink className="w-3 h-3 text-zinc-400" />
@@ -654,6 +945,7 @@ export default function VidfastPage() {
                     <span className="text-xs text-blue-400 font-semibold block mb-1">HLS.js Proxy URL</span>
                     <div className="flex items-center gap-2">
                       <code className="text-xs text-blue-300 font-mono flex-1 break-all">{result.proxyM3u8Url}</code>
+                      <PlayBtn url={result.proxyM3u8Url} title={result.meta?.title || result.title} color="blue" />
                       <CopyBtn text={result.proxyM3u8Url} id="vl-proxy" />
                     </div>
                   </div>
@@ -681,6 +973,37 @@ export default function VidfastPage() {
                 </Badge>
               </div>
 
+              {/* Custom URL player */}
+              <div className="mb-4 p-4 bg-zinc-800 rounded-lg border border-zinc-700">
+                <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+                  <MonitorPlay className="w-4 h-4 text-green-400" />
+                  Play Custom m3u8 URL
+                </h3>
+                <div className="flex gap-2">
+                  <Input
+                    placeholder="Paste any m3u8 URL to test..."
+                    className="bg-zinc-900 border-zinc-600 text-white font-mono text-xs"
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        const url = (e.target as HTMLInputElement).value;
+                        if (url) playStream(url, "Custom URL");
+                      }
+                    }}
+                    id="custom-m3u8-input"
+                  />
+                  <Button
+                    onClick={() => {
+                      const input = document.getElementById("custom-m3u8-input") as HTMLInputElement;
+                      if (input?.value) playStream(input.value, "Custom URL");
+                    }}
+                    className="bg-green-500 hover:bg-green-600 text-black font-semibold shrink-0"
+                  >
+                    <Play className="w-4 h-4" />
+                  </Button>
+                </div>
+                <p className="text-[10px] text-zinc-500 mt-1">Auto-wraps through CORS proxy if it&apos;s an absolute URL</p>
+              </div>
+
               <div className="mb-4">
                 <label className="text-xs text-zinc-400 mb-1 block">TMDB ID for tests</label>
                 <Input
@@ -702,7 +1025,7 @@ export default function VidfastPage() {
                   { label: "Vidlink Raw M3U8", url: `/api/vidlink?tmdb=${tmdbId}&action=raw`, color: "blue" },
                   { label: "Available Sources", url: `/api/vidfast?action=sources`, color: "green" },
                 ].map((test, i) => (
-                  <TestEndpoint key={i} label={test.label} url={test.url} color={test.color} copied={copied} setCopied={setCopied} />
+                  <TestEndpoint key={i} label={test.label} url={test.url} color={test.color} copied={copied} setCopied={setCopied} onPlay={playStream} />
                 ))}
               </div>
             </div>
@@ -772,8 +1095,21 @@ export default function VidfastPage() {
 
                 <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
                   <h3 className="font-semibold text-white mb-2 flex items-center gap-2">
+                    <MonitorPlay className="w-4 h-4 text-green-400" />
+                    Built-in Player
+                  </h3>
+                  <div className="space-y-2 text-sm text-zinc-300">
+                    <p>Every m3u8 URL has a <span className="text-green-400">play button</span> next to it. Click it to test the stream in the built-in HLS.js player.</p>
+                    <p><span className="text-yellow-400">Direct URLs</span> are auto-wrapped through the CORS proxy.</p>
+                    <p><span className="text-blue-400">Proxied URLs</span> (starting with <code className="text-xs">/api/proxy/m3u8</code>) are played directly.</p>
+                    <p>The Test Lab also has a <span className="text-green-400">custom URL input</span> — paste any m3u8 URL and hit Play.</p>
+                  </div>
+                </div>
+
+                <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+                  <h3 className="font-semibold text-white mb-2 flex items-center gap-2">
                     <Globe className="w-4 h-4 text-yellow-400" />
-                    HLS.js Usage
+                    HLS.js Usage (external)
                   </h3>
                   <pre className="bg-zinc-950 rounded-lg p-4 text-xs font-mono text-green-400 overflow-x-auto">
 {`// Quick start with HLS.js
@@ -810,12 +1146,13 @@ hls.attachMedia(videoElement);
 /*  Sub-components                                                     */
 /* ------------------------------------------------------------------ */
 
-function TestEndpoint({ label, url, color, copied, setCopied }: {
+function TestEndpoint({ label, url, color, copied, setCopied, onPlay }: {
   label: string;
   url: string;
   color: string;
   copied: string | null;
   setCopied: (v: string | null) => void;
+  onPlay: (url: string, title?: string) => void;
 }) {
   const [result, setResult] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -868,7 +1205,29 @@ function TestEndpoint({ label, url, color, copied, setCopied }: {
         <div className="mt-3">
           <div className="flex items-center justify-between mb-1">
             <span className="text-xs text-zinc-500">Response</span>
-            <button onClick={() => setShowResult(false)} className="text-xs text-zinc-500 hover:text-zinc-300">Hide</button>
+            <div className="flex items-center gap-1">
+              {(() => {
+                try {
+                  const data = JSON.parse(result);
+                  // Find any m3u8 URL in the response that we can play
+                  const masterUrl = data.masterUrl || data.proxyUrl || data.proxyM3u8Url ||
+                    (data.sources && data.sources[0]?.url) ||
+                    (data.proxiedSources && data.proxiedSources[0]?.url);
+                  if (masterUrl) {
+                    return (
+                      <button
+                        onClick={() => onPlay(masterUrl, label)}
+                        className="flex items-center gap-1 text-xs text-green-400 hover:text-green-300 transition-colors"
+                      >
+                        <MonitorPlay className="w-3 h-3" /> Play
+                      </button>
+                    );
+                  }
+                } catch { /* ignore */ }
+                return null;
+              })()}
+              <button onClick={() => setShowResult(false)} className="text-xs text-zinc-500 hover:text-zinc-300">Hide</button>
+            </div>
           </div>
           <pre className="bg-zinc-950 rounded-lg p-3 overflow-x-auto text-[10px] font-mono text-green-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
             {result}
