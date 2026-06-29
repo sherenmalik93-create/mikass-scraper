@@ -8,9 +8,6 @@
  * GET /api/vidfast?tmdb=1265609&action=multi
  * GET /api/vidfast?tmdb=1265609&kind=tv&season=1&episode=1
  * GET /api/vidfast?action=sources
- *
- * Returns raw m3u8 stream URLs and playlist content from vidfast.pro
- * and related providers via the vaplayer.ru backend API.
  */
 
 import { NextRequest, NextResponse } from "next/server";
@@ -55,11 +52,11 @@ export async function GET(req: NextRequest) {
       {
         sources: AVAILABLE_SOURCES,
         apiDocs: {
-          scrape: "/api/vidfast?tmdb=ID&action=scrape — Full pipeline: meta + m3u8 URLs + raw playlist",
-          streams: "/api/vidfast?tmdb=ID&action=streams — Just m3u8 stream URLs (fast)",
-          raw: "/api/vidfast?tmdb=ID&action=raw — m3u8 URLs + raw playlist content",
-          multi: "/api/vidfast?tmdb=ID&action=multi — Try all sources and return results",
-          meta: "/api/vidfast?tmdb=ID&action=meta — Only scrape vidfast.pro page for en token",
+          scrape: "/api/vidfast?tmdb=ID&action=scrape",
+          streams: "/api/vidfast?tmdb=ID&action=streams",
+          raw: "/api/vidfast?tmdb=ID&action=raw",
+          multi: "/api/vidfast?tmdb=ID&action=multi",
+          meta: "/api/vidfast?tmdb=ID&action=meta",
         },
       },
       { headers: CORS }
@@ -76,7 +73,6 @@ export async function GET(req: NextRequest) {
 
   try {
     switch (action) {
-      // ---- Full pipeline: meta + streams + raw m3u8 ----
       case "scrape": {
         const result = await scrapeVidfastM3U8({
           tmdbId,
@@ -89,7 +85,6 @@ export async function GET(req: NextRequest) {
         return NextResponse.json(result, { headers: CORS });
       }
 
-      // ---- Only m3u8 stream URLs (no page scrape, fastest) ----
       case "streams": {
         const { response, sources } = await fetchM3U8Streams(
           tmdbId,
@@ -100,7 +95,7 @@ export async function GET(req: NextRequest) {
         );
         const proxiedSources = sources.map((s) => ({
           ...s,
-          url: `/api/proxy/m3u8?url=${encodeURIComponent(s.url)}&referer=${encodeURIComponent("https://nextgencloudfabric.com/")}`,
+          url: `/api/proxy/m3u8?url=${encodeURIComponent(s.url)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`,
         }));
         return NextResponse.json(
           {
@@ -111,6 +106,7 @@ export async function GET(req: NextRequest) {
             title: response.data?.title,
             imdbId: response.data?.imdb_id,
             fileName: response.data?.file_name,
+            backdrop: response.data?.backdrop,
             sources,
             proxiedSources,
             thumbnailsUrl: response.thumbnails_url,
@@ -119,7 +115,6 @@ export async function GET(req: NextRequest) {
         );
       }
 
-      // ---- m3u8 URLs + raw playlist content ----
       case "raw": {
         const { sources } = await fetchM3U8Streams(
           tmdbId,
@@ -148,23 +143,27 @@ export async function GET(req: NextRequest) {
             allUrls: sources.map((s) => s.url),
             rawM3u8,
             proxyUrl: masterUrl
-              ? `/api/proxy/m3u8?url=${encodeURIComponent(masterUrl)}&referer=${encodeURIComponent("https://nextgencloudfabric.com/")}`
+              ? `/api/proxy/m3u8?url=${encodeURIComponent(masterUrl)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`
               : null,
           },
           { headers: CORS }
         );
       }
 
-      // ---- Try all vaplayer sources ----
       case "multi": {
-        const results = await scrapeAllSources({ tmdbId, kind, season, episode });
+        const results = await scrapeAllSources({
+          tmdbId,
+          kind,
+          season,
+          episode,
+          includeRaw: true,
+        });
         return NextResponse.json(
           { success: true, tmdbId, kind, results },
           { headers: CORS }
         );
       }
 
-      // ---- Only scrape vidfast.pro for en token + metadata ----
       case "meta": {
         const meta = await scrapeVidfastMeta(tmdbId, kind, season, episode);
         return NextResponse.json(

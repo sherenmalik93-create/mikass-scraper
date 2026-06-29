@@ -5,8 +5,8 @@
  * (vidsrc.pm, vidsrc.to, 2embed, etc.) using the vaplayer.ru backend API.
  *
  * How it works:
- *   1. Fetch vidfast.pro/movie/{tmdb_id} → parse RSC payload → extract `en` token
- *   2. Call streamdata.vaplayer.ru/api.php with tmdb ID → get m3u8 stream URLs
+ *   1. Fetch vidfast.pro/movie/{tmdb_id} -> parse RSC payload -> extract `en` token
+ *   2. Call streamdata.vaplayer.ru/api.php with tmdb ID -> get m3u8 stream URLs
  *   3. Return raw m3u8 URLs + playlist content through our CORS proxy
  *
  * The vaplayer.ru API is the shared backend for vidfast.pro, vidsrc.pm,
@@ -76,7 +76,6 @@ const BROWSER_UA =
 const VIDFAST_BASE = "https://vidfast.pro";
 const VAPLAYER_API = "https://streamdata.vaplayer.ru/api.php";
 const NEXTGEN_CDN_HOST = "nextgenmarketinghub.site";
-const VIDAPI_HOST = "vidapi.cloud";
 
 /**
  * Available "source" values for the vaplayer API.
@@ -90,7 +89,7 @@ export const AVAILABLE_SOURCES: VaplayerSource[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Step 1: Scrape vidfast.pro RSC payload → extract `en` token + metadata
+// Step 1: Scrape vidfast.pro RSC payload -> extract `en` token + metadata
 // ---------------------------------------------------------------------------
 
 /**
@@ -126,7 +125,7 @@ export async function scrapeVidfastMeta(
 
   const html = await res.text();
 
-  // Parse RSC payload — the `en` token and metadata are embedded in a
+  // Parse RSC payload - the `en` token and metadata are embedded in a
   // self.__next_f.push() call like:
   //   5:["$","$L11",null,{"en":"...","host":"vidfast.pro","id":"1265609","title":"War Machine","year":"2026","backdrop":"..."}]
   const enMatch = html.match(/"en":"([^"]+)"/);
@@ -153,21 +152,13 @@ export async function scrapeVidfastMeta(
 }
 
 // ---------------------------------------------------------------------------
-// Step 2: Call vaplayer.ru API → get m3u8 stream URLs
+// Step 2: Call vaplayer.ru API -> get m3u8 stream URLs
 // ---------------------------------------------------------------------------
 
 /**
  * Call the vaplayer.ru stream API to get m3u8 playlist URLs for a given
  * TMDB ID. This is the shared backend used by vidfast.pro, vidsrc.pm,
  * nextgencloudfabric.com, and other VA Player sites.
- *
- * @param tmdbId - The TMDB movie/TV show ID
- * @param kind   - "movie" or "tv"
- * @param source - The source provider: "justhd", "vidsrc", "auto", "vidfast"
- * @param season - Season number (TV only)
- * @param episode - Episode number (TV only)
- * @param token  - Optional play token (from vidfast RSC payload)
- * @param ts     - Optional timestamp (from vidfast RSC payload)
  */
 export async function fetchM3U8Streams(
   tmdbId: string,
@@ -276,11 +267,8 @@ export async function fetchRawM3U8(
 // ---------------------------------------------------------------------------
 
 /**
- * Full pipeline: scrape vidfast.pro → extract en token → call vaplayer API →
- * get m3u8 URLs → optionally fetch raw playlist content.
- *
- * Returns everything you need: metadata, stream URLs, proxied URLs, and
- * the raw m3u8 playlist text.
+ * Full pipeline: scrape vidfast.pro -> extract en token -> call vaplayer API ->
+ * get m3u8 URLs -> optionally fetch raw playlist content.
  */
 export async function scrapeVidfastM3U8(opts: {
   tmdbId: string;
@@ -305,7 +293,6 @@ export async function scrapeVidfastM3U8(opts: {
     try {
       meta = await scrapeVidfastMeta(tmdbId, kind, season, episode);
     } catch (err) {
-      // Meta scrape can fail (timeout, etc) but we can still use vaplayer API
       console.warn(
         "[vidfast] Meta scrape failed, continuing with vaplayer API only:",
         err instanceof Error ? err.message : err
@@ -381,6 +368,7 @@ export interface MultiSourceResult {
   success: boolean;
   sources: M3U8StreamSource[];
   proxiedSources: M3U8StreamSource[];
+  rawM3u8?: string | null;
   error?: string;
 }
 
@@ -393,8 +381,9 @@ export async function scrapeAllSources(opts: {
   kind?: MediaKind;
   season?: number;
   episode?: number;
+  includeRaw?: boolean;
 }): Promise<MultiSourceResult[]> {
-  const { tmdbId, kind = "movie", season, episode } = opts;
+  const { tmdbId, kind = "movie", season, episode, includeRaw = false } = opts;
 
   const results = await Promise.allSettled(
     AVAILABLE_SOURCES.map(async (source) => {
@@ -410,11 +399,25 @@ export async function scrapeAllSources(opts: {
           ...s,
           url: `/api/proxy/m3u8?url=${encodeURIComponent(s.url)}&referer=${encodeURIComponent(`https://${NEXTGEN_CDN_HOST}/`)}`,
         }));
+
+        let rawM3u8: string | null = null;
+        if (includeRaw) {
+          const masterUrl = sources.find((s) => s.type === "master")?.url;
+          if (masterUrl) {
+            try {
+              rawM3u8 = await fetchRawM3U8(masterUrl);
+            } catch {
+              rawM3u8 = null;
+            }
+          }
+        }
+
         return {
           source,
           success: true,
           sources,
           proxiedSources,
+          rawM3u8,
         } satisfies MultiSourceResult;
       } catch (err) {
         return {
@@ -428,11 +431,15 @@ export async function scrapeAllSources(opts: {
     })
   );
 
-  return results.map((r) => (r.status === "fulfilled" ? r.value : {
-    source: "auto" as VaplayerSource,
-    success: false,
-    sources: [],
-    proxiedSources: [],
-    error: "Unknown error",
-  }));
+  return results.map((r) =>
+    r.status === "fulfilled"
+      ? r.value
+      : {
+          source: "auto" as VaplayerSource,
+          success: false,
+          sources: [],
+          proxiedSources: [],
+          error: "Unknown error",
+        }
+  );
 }

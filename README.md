@@ -1,105 +1,54 @@
-# Anime Scraper
+# Vidfast Scraper
 
-A self-hostable, multi-provider anime scraper + web UI that extracts **m3u8 (HLS) streams**, **MP4 streams**, and **WebVTT subtitles** from multiple upstream anime sites, enriched with **AniList** metadata.
+A self-hostable m3u8 stream scraper that extracts **raw HLS playlist URLs and content** from **vidfast.pro** and **vidlink/vidsrc** providers via the vaplayer.ru backend API. Includes a built-in **CORS proxy** for browser-side HLS.js playback.
 
-Built with **Next.js 16 · TypeScript · Tailwind CSS · shadcn/ui · hls.js**. Deploys to **Vercel** in one click or runs anywhere with **Docker**.
-
-> ⚠️ **Educational project.** Streams are proxied from upstream providers for personal use only. The maintainer does not host any media content. Support the official release when available in your region.
+Built with **Next.js 16 · TypeScript · Tailwind CSS 4**. Deploys to **Vercel** in one click.
 
 ---
 
 ## Features
 
-- 🎛️ **Multi-provider architecture** — switch between upstreams from the UI with one click
-  - **Animetsu** — `animetsu.live` · soft sub · 4 servers (kite / dio / sage / meg) · HLS m3u8
-  - **Anikuro** — `anikuro.ru` · aggregates 11 upstreams (animeverse / animegg / anikoto / animepahe / reanime / animedao / anidb / animedunya / animeverse / allani / senshi / animix) · MP4 + HLS
-- 🔍 **Search** — instant debounced search across the active provider's catalog
-- 🎬 **Universal media player** — hls.js for HLS, native HTML5 for MP4, with quality switcher and VTT subtitle selector
-- 🅰️ **Sub / Dub toggle** — switch between subtitled and dubbed sources per episode
-- ⏭️ **Skip intro / outro** — auto-detected skip markers surface as in-player buttons
-- 🧠 **AniList enrichment** — characters, studios, recommendations, YouTube trailer, next-airing countdown
-- 🔥 **Trending now** — pulled from the AniList GraphQL API on the home page
-- 🆕 **Recently released** — live from animetsu.live
-- 🛡️ **Cloudflare-friendly** — built-in CORS proxy rewrites all upstream URIs through your own domain, with retry + fallback logic for 403/429/503 challenges, and per-upstream Referer support
-- 🐳 **One-command Docker** — `docker compose up` and you're done
-- ▲ **One-click Vercel** — pure Node.js runtime, no native deps
+- **Vidfast M3U8 Scraper** — Extract raw m3u8 stream URLs from `vidfast.pro/movie/{tmdb_id}`
+  - Scrapes RSC payload for encrypted `en` token
+  - Calls vaplayer.ru API to get stream URLs
+  - Returns raw m3u8 playlist content
+  - 4 source options: `auto`, `justhd`, `vidsrc`, `vidfast`
+- **Vidlink Scraper** — Extract m3u8 streams via the vidlink/vidsrc provider chain
+- **CORS Proxy** — Built-in `/api/proxy/m3u8` that:
+  - Rewrites all URLs inside m3u8 playlists back through itself
+  - Sets correct Referer headers per upstream host
+  - Streams binary segments without buffering
+  - Handles Range requests for MP4
+- **4-tab GUI** — Scraper, Vidlink, Test Lab, API Docs
+- **Vercel-ready** — Pure Node.js, no native dependencies
 
 ---
 
-## Architecture
+## How It Works
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Browser (you)                            │
-│  ┌──────────────────────────────────────────────────────────┐   │
-│  │  /  →  Home (search · trending · recent)                  │   │
-│  │        [Provider switcher: Animetsu ⇄ Anikuro]            │   │
-│  │  ↓ click anime                                           │   │
-│  │  /?anime=<id>  →  Details (info · episodes · trailer)    │   │
-│  │  ↓ click episode                                         │   │
-│  │  /?watch=<id>&ep=<n>  →  MediaPlayer (HLS or MP4)         │   │
-│  └──────────────────────────────────────────────────────────┘   │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │  fetch (same origin, ?provider=…)
-                                ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Next.js (your domain)                       │
-│                                                                  │
-│  /api/scrape/providers    →  list of registered providers        │
-│  /api/scrape/search       ─┐                                     │
-│  /api/scrape/info          │                                     │
-│  /api/scrape/episodes      │  →  dispatches to the active        │
-│  /api/scrape/servers       │     provider (animetsu or anikuro)  │
-│  /api/scrape/sources      ─┘                                     │
-│                                                                  │
-│  /api/scrape/anilist      →  AniList GraphQL (enrichment)        │
-│  /api/scrape/recent       →  animetsu recent releases            │
-│                                                                  │
-│  /api/proxy/m3u8?url=…&referer=…                                │
-│       │  Handles both HLS playlists and MP4 streams              │
-│       │  - HLS: rewrites relative URIs through itself            │
-│       │  - MP4: passes through with Range support                │
-│       │  - Sets the right Referer per upstream                   │
-│       ▼                                                          │
-│   Provider abstraction:                                          │
-│   ┌──────────────┐  ┌──────────────┐                             │
-│   │  Animetsu    │  │  Anikuro     │                             │
-│   │  /v2/api/    │  │  /api/v1/    │                             │
-│   │  anime/*     │  │  anime/*     │                             │
-│   │              │  │              │                             │
-│   │  ↳ kite      │  │  ↳ 11 upstreams                            │
-│   │  ↳ dio       │  │    tried in parallel                       │
-│   │  ↳ sage      │  │    MP4 preferred                            │
-│   │  ↳ meg       │  │                                              │
-│   └──────────────┘  └──────────────┘                             │
-└─────────────────────────────────────────────────────────────────┘
+1. Fetch vidfast.pro/movie/{tmdb_id}
+   → Parse RSC payload → Extract encrypted `en` token + metadata
+
+2. Call streamdata.vaplayer.ru/api.php?tmdb={id}&source={source}
+   → Get m3u8 stream URLs from VA Player backend
+
+3. Return raw m3u8 URLs + playlist content
+   → Proxied URLs ready for HLS.js
 ```
 
-### Key files
-
-| Path | Purpose |
-| --- | --- |
-| `src/lib/providers/types.ts` | Unified `Provider` interface — every backend implements this |
-| `src/lib/providers/index.ts` | Provider registry — single source of truth |
-| `src/lib/providers/animetsu.ts` | Animetsu adapter (wraps the animetsu client) |
-| `src/lib/providers/anikuro.ts` | Anikuro adapter (multi-provider fan-out, MP4 preference) |
-| `src/lib/animetsu/client.ts` | Raw HTTP client for animetsu.live |
-| `src/lib/anilist/client.ts` | AniList GraphQL client (cached, rate-limit-friendly) |
-| `src/app/api/scrape/*` | API routes — all accept `?provider=animetsu|anikuro` |
-| `src/app/api/proxy/m3u8/route.ts` | Universal CORS proxy (HLS + MP4 + VTT, per-upstream Referer) |
-| `src/components/animetsu/media-player.tsx` | Universal player — HLS via hls.js, MP4 via native `<video>` |
-| `src/app/page.tsx` | Single-page UI with provider switcher |
+The vaplayer.ru API is the shared backend for vidfast.pro, vidsrc.pm, nextgencloudfabric.com, and other VA Player sites.
 
 ---
 
-## Quick start (local dev)
+## Quick Start (Local Dev)
 
 ```bash
-git clone <this-repo> anime-scraper
-cd anime-scraper
-bun install                 # or: npm install / pnpm install
-cp .env.example .env.local  # optional — defaults already work
-bun run dev                 # → http://localhost:3000
+git clone https://github.com/sherenmalik93-create/vidfast-scraper.git
+cd vidfast-scraper
+bun install
+bun run dev
+# → http://localhost:3000
 ```
 
 ---
@@ -109,180 +58,111 @@ bun run dev                 # → http://localhost:3000
 1. Push this repo to GitHub.
 2. Go to [vercel.com/new](https://vercel.com/new) and import the repo.
 3. Vercel auto-detects Next.js — no build config needed.
-4. (Optional) Set environment variables from `.env.example` in **Project → Settings → Environment Variables**.
-5. Click **Deploy**. Done.
-
-`vercel.json` already bumps the `/api/proxy/m3u8` function to **60 s maxDuration + 1 GB RAM** so it can stream long episodes without timing out.
+4. Click **Deploy**. Done.
 
 ---
 
-## Self-host with Docker
+## API Reference
 
-```bash
-docker compose up -d --build
-# → http://localhost:3000
-```
+### Vidfast Scraper
 
-The Dockerfile uses Next.js **standalone output** — the final image is ~150 MB and runs as a non-root user.
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/vidfast?tmdb=ID&action=scrape` | Full pipeline: meta + m3u8 URLs + raw playlist + proxied URLs |
+| `GET /api/vidfast?tmdb=ID&action=streams` | Just m3u8 stream URLs (fastest) |
+| `GET /api/vidfast?tmdb=ID&action=raw` | m3u8 URLs + raw playlist content |
+| `GET /api/vidfast?tmdb=ID&action=multi` | Try all sources (justhd, vidsrc, auto, vidfast) |
+| `GET /api/vidfast?tmdb=ID&action=meta` | Only scrape vidfast.pro for en token + metadata |
+| `GET /api/vidfast?action=sources` | List available sources |
 
-| Env var | Default | Purpose |
-| --- | --- | --- |
-| `ANIMETSU_API_BASE` | `https://animetsu.live/v2/api/anime` | Override the animetsu JSON API base |
-| `SWIFTSTREAM_PROXY` | `https://swiftstream.top/proxy` | Override the animetsu m3u8 / subtitle proxy |
-| `ANIKURO_BASE` | `https://anikuro.ru` | Override the anikuro API base |
-| `ANIKURO_PROXY` | `https://proxy.anikuro.ru` | Override the anikuro MP4 / m3u8 proxy |
-| `FALLBACK_PROXY` | *(empty)* | Optional cors-anywhere-style proxy used when Cloudflare returns a 403/429/503 |
+**Parameters:**
+
+| Param | Type | Required | Description |
+| --- | --- | --- | --- |
+| `tmdb` | string | Yes | TMDB movie/TV ID (e.g. `1265609`) |
+| `action` | string | No | `scrape` \| `streams` \| `raw` \| `multi` \| `meta` \| `sources` (default: `scrape`) |
+| `kind` | string | No | `movie` \| `tv` (default: `movie`) |
+| `source` | string | No | `auto` \| `justhd` \| `vidsrc` \| `vidfast` (default: `auto`) |
+| `season` | number | No | Season number (TV only) |
+| `episode` | number | No | Episode number (TV only) |
+
+### Vidlink Scraper
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/vidlink?tmdb=ID&action=streams` | Vidlink/vidsrc m3u8 stream URLs |
+| `GET /api/vidlink?tmdb=ID&action=raw` | Vidlink m3u8 + raw playlist content |
+
+**Parameters:** Same as Vidfast (default source is `vidsrc`).
+
+### CORS Proxy
+
+| Endpoint | Description |
+| --- | --- |
+| `GET /api/proxy/m3u8?url={encoded}` | Proxy any m3u8/segment URL with CORS headers and playlist URL rewriting |
+| `GET /api/proxy/m3u8?url={encoded}&referer={encoded}` | Override Referer header |
+| `GET /api/proxy/m3u8?url={encoded}&format=m3u8` | Force m3u8 format detection |
+| `GET /api/proxy/m3u8?url={encoded}&format=vtt` | Force VTT subtitle format |
 
 ---
 
-## API reference
+## HLS.js Usage
 
-All routes are GET. Responses are JSON unless noted. All `/api/scrape/*` routes accept a `?provider=animetsu|anikuro` query param (defaults to `animetsu`).
+```javascript
+import Hls from 'hls.js';
 
-### `GET /api/scrape/providers`
+const hls = new Hls();
 
-Returns the list of registered providers.
+// Option 1: Use the proxied URL from the API response
+hls.loadSource(result.proxiedSources[0].url);
+hls.attachMedia(videoElement);
 
-```jsonc
-{
-  "providers": [
-    { "id": "animetsu", "label": "Animetsu", "description": "…", "defaultServer": "kite", "supportsDub": true },
-    { "id": "anikuro",  "label": "Anikuro",  "description": "…", "defaultServer": "animeverse", "supportsDub": true }
-  ]
-}
+// Option 2: Use the proxy directly with a raw m3u8 URL
+hls.loadSource('/api/proxy/m3u8?url=' + encodeURIComponent(masterUrl));
+hls.attachMedia(videoElement);
 ```
 
-### `GET /api/scrape/search?q=<query>&provider=<id>`
+---
 
-Returns `results[]` with the provider-specific id, title, cover image, year, score, etc.
-
-### `GET /api/scrape/info?id=<id>&provider=<id>&enrich=1`
-
-Returns the full anime info, optionally merged with AniList data when `enrich=1` (default).
-
-### `GET /api/scrape/episodes?id=<id>&provider=<id>`
-
-Returns the list of episodes.
-
-### `GET /api/scrape/servers?id=<id>&ep=<epNum>&provider=<id>`
-
-Returns the available streaming servers for that episode.
-
-- **Animetsu**: `kite` (default, soft sub) · `dio` · `sage` · `meg`
-- **Anikuro**: `animeverse` (default, MP4) · `animegg` · `anikoto` · `animepahe` · `reanime` · `animedao` · `animegg` · `anidb` · `animedunya` · `animeverse` · `allani` · `senshi` · `animix`
-
-### `GET /api/scrape/sources?id=<id>&ep=<epNum>&server=<server>&type=sub|dub&provider=<id>`
-
-Returns a player-ready payload:
+## Example Response
 
 ```jsonc
+// GET /api/vidfast?tmdb=1265609&action=scrape
 {
+  "success": true,
+  "meta": {
+    "tmdbId": "1265609",
+    "title": "War Machine",
+    "year": "2026",
+    "backdrop": "https://image.tmdb.org/t/p/original/...",
+    "enToken": "abc123...",
+    "host": "vidfast.pro"
+  },
   "sources": [
-    { "url": "/api/proxy/m3u8?url=…", "type": "master", "quality": "auto", "isMaster": true },
-    { "url": "/api/proxy/m3u8?url=…", "type": "hls",    "quality": "1080p" },
-    // OR
-    { "url": "https://proxy.anikuro.ru/…", "type": "mp4", "quality": "720p" }
+    { "url": "https://nextgenmarketinghub.site/playlist/abc/master.m3u8", "quality": "auto", "type": "master" }
   ],
-  "subtitles": [{ "lang": "English", "url": "/api/proxy/m3u8?format=vtt&url=…" }],
-  "skips": { "intro": { "start": 0, "end": 0 }, "outro": { "start": 0, "end": 0 } },
-  "server": "animeverse",
-  "provider": "anikuro",
-  "qualities": [{ "label": "1080p", "resolution": "1920x1080", "url": "…" }]
+  "rawM3u8": "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=...\n...",
+  "proxiedSources": [
+    { "url": "/api/proxy/m3u8?url=https%3A%2F%2Fnextgenmarketinghub.site%2F...", "quality": "auto", "type": "master" }
+  ],
+  "proxyM3u8Url": "/api/proxy/m3u8?url=..."
 }
 ```
 
-For anikuro, if `server` is omitted or set to `auto`/`default`, the provider fans out to a curated subset of upstreams in parallel and returns the best playable source (preferring MP4 over HLS).
-
-### `GET /api/proxy/m3u8?url=<encoded>&referer=<encoded>&format=<vtt|m3u8>`
-
-Universal CORS proxy for upstream m3u8 / MP4 / VTT URLs. Auto-detects content type:
-
-- `application/vnd.apple.mpegurl` content → rewrites all relative URIs in the playlist back through `/api/proxy/m3u8` (preserving the `&referer=` if provided)
-- `video/mp4` content → streamed through with Range support
-- `text/vtt` content → passed through with `text/vtt; charset=utf-8`
-- Binary segments (TS / fMP4) → streamed through with upstream content-type
-
-The optional `?referer=` param sets the `Referer` header sent to the upstream — required for anikuro HLS streams that come from referer-locked CDNs.
-
-### `GET /api/scrape/anilist?id=<anilistId>` | `?search=<q>` | `?trending=1`
-
-Direct AniList GraphQL passthrough. Cached for 30 min.
-
 ---
 
-## Adding a new provider
+## Key Files
 
-The provider abstraction makes it trivial to add a new upstream site:
-
-1. Create `src/lib/providers/<name>.ts` and implement the `Provider` interface:
-   ```ts
-   export const myProvider: Provider = {
-     meta: { id: "mine", label: "Mine", /* … */ },
-     async search(query) { /* … */ return []; },
-     async getInfo(id) { /* … */ return null; },
-     async getEpisodes(id) { /* … */ return []; },
-     async getServers(id, ep) { /* … */ return []; },  // optional
-     async getSources(opts) { /* … */ return { sources, subtitles, server, provider: "mine" }; },
-   };
-   ```
-2. Register it in `src/lib/providers/index.ts`:
-   ```ts
-   export const providers: Record<ProviderId, Provider> = {
-     animetsu: animetsuProvider,
-     anikuro: anikuroProvider,
-     mine: myProvider,  // ← add here
-   };
-   ```
-3. Add the provider id to the `ProviderId` union type in `src/lib/providers/types.ts`.
-
-The UI and API routes will pick it up automatically — no other changes needed.
-
----
-
-## How each provider works
-
-### Animetsu
-
-1. The animetsu.live frontend is a Vite SPA. Its main bundle reveals the API base: `window.b = https://animetsu.live/v2` and an axios instance at `ole = ${b}/api`.
-2. All API calls are routed through `${ole}/anime/<key>`. The interesting keys are:
-   - `search/?query=<q>`
-   - `info/<id>`
-   - `eps/<id>`
-   - `servers/<id>/<ep>`
-   - `oppai/<id>/<ep>?server=<s>&source_type=sub|dub` ← returns `{ sources, subs, skips }`
-3. The `sources[].url` is a relative path like `/oppai/kite/<token>`. When `need_proxy === true`, the host is `https://swiftstream.top/proxy`.
-4. The master playlist contains relative token paths for each quality (360p / 720p / 1080p).
-5. Subtitles come back as full `https://swiftstream.top/proxy/oppai/kite/<token>` URLs in **WebVTT** format.
-
-### Anikuro
-
-1. Anikuro.ru is a Next.js-style site with a clean JSON API at `/api/v1/*` that aggregates 11 upstream anime providers.
-2. Endpoints used:
-   - `discovery/search?query=<q>` → search
-   - `anime/<id>` → info (id is the AniList id)
-   - `anime/<id>/episodes` → episode list
-   - `sources/<provider>/<animeId>:<epNum>` → stream sources for a specific upstream provider
-3. Stream URLs come back pre-wrapped through `https://proxy.anikuro.ru/<base64>.m3u8|referer?proxy=0` where the base64 decodes to `<streamUrl>|<upstreamReferer>`.
-4. As of 2026-06, anikuro's m3u8 proxy returns HTTP 500, but the **MP4 proxy works** with Range support. The provider prefers MP4 sources (animeverse, animegg) and falls back to HLS (anikoto, animix) routed through our own `/api/proxy/m3u8` with the upstream Referer set.
-5. When `server=auto` (the default), the provider fans out to a curated subset of 4 upstreams in parallel (~600 ms total), then falls back to the remaining 7 if no hit was found.
-
----
-
-## Tech stack
-
-| Layer | Choice | Why |
-| --- | --- | --- |
-| Framework | **Next.js 16** (App Router) | One codebase for API + UI, deploys to Vercel out of the box |
-| Language | **TypeScript 5** | Strict typing for upstream payloads |
-| UI | **Tailwind CSS 4** + **shadcn/ui** | Fast, accessible, themeable |
-| Player | **hls.js** + native HTML5 `<video>` | HLS for adaptive streaming, native for MP4 |
-| State | React hooks (no global store needed) | App is a single-page flow |
-| Caching | In-memory LRU + `Cache-Control` headers | No external cache infra required |
-| Container | **Docker** (Node 22-alpine, standalone) | ~150 MB final image |
-| Host | **Vercel** or any Node host | Pure JS — no native deps |
+| Path | Purpose |
+| --- | --- |
+| `src/lib/vidfast/scraper.ts` | Core scraper: vidfast.pro RSC parser + vaplayer.ru API client |
+| `src/app/api/vidfast/route.ts` | Vidfast API route (scrape, streams, raw, multi, meta) |
+| `src/app/api/vidlink/route.ts` | Vidlink API route (streams, raw) |
+| `src/app/api/proxy/m3u8/route.ts` | CORS proxy with m3u8 playlist rewriting |
+| `src/app/page.tsx` | GUI: Scraper + Vidlink + Test Lab + API Docs |
 
 ---
 
 ## License
 
-MIT — see `LICENSE`. The project is provided for educational purposes. Use responsibly and in accordance with the laws of your jurisdiction.
+MIT

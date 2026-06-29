@@ -1,1179 +1,923 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { Search, Play, Star, Calendar, Tv, Loader2, ChevronLeft, Film, Flame, Server, Code2, ChevronDown, ChevronUp, Copy, Check, BookOpen } from "lucide-react";
-import Link from "next/link";
+import { useState, useCallback } from "react";
+import {
+  Search,
+  Play,
+  Copy,
+  Check,
+  Loader2,
+  Film,
+  Tv,
+  Server,
+  Code2,
+  ChevronDown,
+  ChevronUp,
+  ExternalLink,
+  Zap,
+  Link2,
+  BookOpen,
+  Terminal,
+  Globe,
+} from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import {
-  MediaPlayer,
-  type Quality,
-  type Subtitle,
-  type SkipMarkers,
-  type StreamSource,
-} from "@/components/animetsu/media-player";
 
 /* ------------------------------------------------------------------ */
-/*  Types — these match the unified provider payloads                 */
+/*  Types                                                              */
 /* ------------------------------------------------------------------ */
 
-interface ProviderMeta {
-  id: string;
-  label: string;
-  description: string;
-  accent: string;
-  supportsDub: boolean;
-  defaultServer: string;
+interface StreamSource {
+  url: string;
+  quality: string;
+  type: "master" | "variant";
 }
 
-interface SearchResult {
-  id: string;
-  anilistId?: number;
-  malId?: number;
-  title: { romaji?: string; english?: string; native?: string; preferred?: string };
-  coverImage?: { large?: string; medium?: string; small?: string; color?: string; cover?: string; banner?: string };
-  banner?: string;
-  description?: string;
-  status?: string;
-  year?: number;
-  format?: string;
-  genres?: string[];
-  averageScore?: number;
-  totalEpisodes?: number | null;
-  isAdult?: boolean;
-  duration?: number;
-  season?: string;
-  // animetsu legacy fields (kept for backward compat with the old shape)
-  cover_image?: { large?: string; medium?: string; color?: string };
-  average_score?: number;
-  total_eps?: number | null;
-}
-
-interface AnimeInfo extends SearchResult {
-  anilist?: {
-    characters?: { nodes: { id: number; name: { full: string; native?: string }; image?: { large?: string } }[] };
-    studios?: { nodes: { id: number; name: string }[] };
-    recommendations?: { nodes: { id: number; mediaRecommendation?: { id: number; title: { romaji?: string; english?: string }; coverImage?: { large?: string }; averageScore?: number } }[] };
-    trailer?: { id: string; site: string };
-    popularity?: number;
-    favourites?: number;
-    trending?: number;
+interface ScrapeResult {
+  success: boolean;
+  meta?: {
+    tmdbId: string;
+    title: string;
+    year: string;
+    backdrop: string;
+    enToken: string;
+    host: string;
   } | null;
-  next_airing_ep?: { airing_at?: number; ep_num?: number; time_left?: number };
-  synonyms?: string[];
-  tags?: string[];
-  start_date?: string | null;
-}
-
-interface Episode {
-  number: number;
-  displayNumber?: string;
-  sourceId: string;
+  sources?: StreamSource[];
+  proxiedSources?: StreamSource[];
+  rawM3u8?: string | null;
+  proxyM3u8Url?: string | null;
+  error?: string;
   title?: string;
-  description?: string;
-  thumbnail?: string;
-  image?: string;
-  airedAt?: string;
-  duration?: number;
-  filler?: boolean;
-  variants?: string[];
+  imdbId?: string;
+  fileName?: string;
 }
 
-interface ServerInfo { id: string; label?: string; description?: string; default?: boolean; }
-
-interface SourcesPayload {
+interface MultiSourceResult {
+  source: string;
+  success: boolean;
   sources: StreamSource[];
-  subtitles: Subtitle[];
-  skips?: SkipMarkers;
-  server: string;
-  provider: string;
-  qualities?: Quality[];
-  /** Raw upstream payload — exposed in the "Show raw response" panel */
-  raw?: unknown;
-  rawMulti?: Record<string, unknown>;
+  proxiedSources: StreamSource[];
+  rawM3u8?: string | null;
+  error?: string;
 }
 
-type View =
-  | { kind: "home" }
-  | { kind: "details"; id: string }
-  | { kind: "watch"; id: string; ep: number };
-
-const titleStr = (t?: { romaji?: string; english?: string; native?: string; preferred?: string }) =>
-  t?.english || t?.romaji || t?.native || t?.preferred || "Unknown";
-
-export default function Home() {
-  const [providerId, setProviderId] = useState<string>("animetsu");
-  const [providers, setProviders] = useState<ProviderMeta[]>([]);
-  const [query, setQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchResult[] | null>(null);
-  const [searching, setSearching] = useState(false);
-  const [trending, setTrending] = useState<SearchResult[]>([]);
-  const [recent, setRecent] = useState<SearchResult[]>([]);
-  const [view, setView] = useState<View>({ kind: "home" });
-  const [info, setInfo] = useState<AnimeInfo | null>(null);
-  const [infoLoading, setInfoLoading] = useState(false);
-  const [episodes, setEpisodes] = useState<Episode[] | null>(null);
-  const [servers, setServers] = useState<ServerInfo[]>([]);
-  const [sources, setSources] = useState<SourcesPayload | null>(null);
-  const [sourcesLoading, setSourcesLoading] = useState(false);
-  const [server, setServer] = useState<string>("");
-  const [sourceType, setSourceType] = useState<"sub" | "dub">("sub");
-  const [error, setError] = useState<string | null>(null);
-
-  // Load provider list on mount
-  useEffect(() => {
-    fetch("/api/scrape/providers")
-      .then((r) => r.json())
-      .then((d) => {
-        if (Array.isArray(d.providers)) {
-          setProviders(d.providers);
-          // Set the default server for the active provider
-          const active = d.providers.find((p: ProviderMeta) => p.id === providerId);
-          if (active?.defaultServer) setServer(active.defaultServer);
-        }
-      })
-      .catch(() => {});
-  }, []);
-
-  // When provider changes, reset state and update default server
-  useEffect(() => {
-    setSearchResults(null);
-    setView({ kind: "home" });
-    const active = providers.find((p) => p.id === providerId);
-    if (active?.defaultServer) setServer(active.defaultServer);
-  }, [providerId, providers]);
-
-  // Load home page data (trending + recent) on mount — only for animetsu
-  // (anikuro has its own trending endpoint)
-  useEffect(() => {
-    (async () => {
-      try {
-        const [tRes, rRes] = await Promise.all([
-          fetch("/api/scrape/anilist?trending=1").then((r) => r.json()),
-          fetch("/api/scrape/recent?per_page=20").then((r) => r.json()).catch(() => null),
-        ]);
-        if (Array.isArray(tRes)) {
-          setTrending(
-            tRes.map((m: Record<string, unknown>) => {
-              const title =
-                (m.title as { english?: string })?.english ||
-                (m.title as { romaji?: string })?.romaji ||
-                "";
-              return {
-                id: `al:${encodeURIComponent(title)}`,
-                title: {
-                  english: (m.title as { english?: string })?.english,
-                  romaji: (m.title as { romaji?: string })?.romaji,
-                },
-                coverImage: {
-                  large: (m.coverImage as { large?: string })?.large,
-                  color: (m.coverImage as { color?: string })?.color,
-                },
-                averageScore: (m as { averageScore?: number }).averageScore,
-                year: (m as { seasonYear?: number }).seasonYear,
-                format: (m as { format?: string }).format,
-                totalEpisodes: (m as { episodes?: number }).episodes,
-              };
-            })
-          );
-        }
-        if (rRes?.results && Array.isArray(rRes.results)) {
-          setRecent(rRes.results);
-        }
-      } catch {
-        /* ignore — home page is best-effort */
-      }
-    })();
-  }, []);
-
-  // Debounced search — uses the active provider
-  useEffect(() => {
-    if (!query.trim()) {
-      setSearchResults(null);
-      return;
-    }
-    setSearching(true);
-    const t = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/scrape/search?q=${encodeURIComponent(query)}&provider=${providerId}`);
-        const data = await res.json();
-        setSearchResults(Array.isArray(data.results) ? data.results : []);
-      } catch {
-        setSearchResults([]);
-      } finally {
-        setSearching(false);
-      }
-    }, 350);
-    return () => clearTimeout(t);
-  }, [query, providerId]);
-
-  // Load details when navigating
-  useEffect(() => {
-    if (view.kind !== "details") return;
-    setInfo(null);
-    setEpisodes(null);
-    setInfoLoading(true);
-    setError(null);
-    (async () => {
-      try {
-        const [infoRes, epsRes] = await Promise.all([
-          fetch(`/api/scrape/info?id=${view.id}&provider=${providerId}`).then((r) => r.json()),
-          fetch(`/api/scrape/episodes?id=${view.id}&provider=${providerId}`).then((r) => r.json()),
-        ]);
-        setInfo(infoRes);
-        setEpisodes(Array.isArray(epsRes) ? epsRes : []);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load anime.");
-      } finally {
-        setInfoLoading(false);
-      }
-    })();
-  }, [view, providerId]);
-
-  // Load servers when entering watch view
-  useEffect(() => {
-    if (view.kind !== "watch") return;
-    setError(null);
-    setServers([]);
-    setSources(null);
-    (async () => {
-      try {
-        const sRes = await fetch(`/api/scrape/servers?id=${view.id}&ep=${view.ep}&provider=${providerId}`).then((r) => r.json());
-        setServers(Array.isArray(sRes) ? sRes : []);
-        const defaultSrv = (Array.isArray(sRes) ? sRes.find((s: ServerInfo) => s.default) : null)?.id
-          || (Array.isArray(sRes) && sRes[0]?.id) || "";
-        setServer(defaultSrv);
-        if (defaultSrv) {
-          await loadSources(view.id, view.ep, defaultSrv, sourceType);
-        }
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load servers.");
-      }
-    })();
-     
-  }, [view]);
-
-  const resolveBySearch = useCallback(async (title: string) => {
-    setError(null);
-    setInfoLoading(true);
-    try {
-      const res = await fetch(`/api/scrape/search?q=${encodeURIComponent(title)}&provider=${providerId}`);
-      const data = await res.json();
-      const first = data.results?.[0];
-      if (first?.id) {
-        setView({ kind: "details", id: first.id });
-      } else {
-        setError(`No entry found for "${title}" on ${providerId}.`);
-        setInfoLoading(false);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Search failed.");
-      setInfoLoading(false);
-    }
-  }, [providerId]);
-
-  const loadSources = useCallback(
-    async (id: string, ep: number, srv: string, type: "sub" | "dub") => {
-      setSourcesLoading(true);
-      setSources(null);
-      setError(null);
-      try {
-        const res = await fetch(`/api/scrape/sources?id=${id}&ep=${ep}&server=${srv}&type=${type}&provider=${providerId}`);
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-        setSources(data);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Failed to load stream.");
-      } finally {
-        setSourcesLoading(false);
-      }
-    },
-    [providerId]
-  );
-
-  // Reload sources when server or sourceType changes during watch
-  useEffect(() => {
-    if (view.kind !== "watch" || !server) return;
-    loadSources(view.id, view.ep, server, sourceType);
-     
-  }, [server, sourceType]);
-
-  const currentEp = useMemo(
-    () => episodes?.find((e) => e.number === (view.kind === "watch" ? view.ep : -1)),
-    [episodes, view]
-  );
-
-  const onNextEp = useCallback(() => {
-    if (view.kind !== "watch" || !episodes) return;
-    const next = episodes.find((e) => e.number === view.ep + 1);
-    if (next) setView({ kind: "watch", id: view.id, ep: next.number });
-  }, [view, episodes]);
-
-  const activeProvider = providers.find((p) => p.id === providerId);
-
-  // Pick the primary source for the MediaPlayer
-  const primarySource = sources?.sources?.[0];
-  // For MP4 sources, expose all mp4 sources as quality levels
-  const mp4Qualities: Quality[] = useMemo(() => {
-    if (!sources || !primarySource || primarySource.type !== "mp4") return [];
-    return sources.sources
-      .filter((s) => s.type === "mp4")
-      .map((s, i) => ({
-        label: s.quality || `Quality ${i + 1}`,
-        resolution: s.quality || "default",
-        url: s.url,
-      }));
-  }, [sources, primarySource]);
-
-  return (
-    <div className="min-h-screen flex flex-col bg-zinc-950 text-zinc-100">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-zinc-950/80 backdrop-blur-md">
-        <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 py-3">
-          <button
-            onClick={() => setView({ kind: "home" })}
-            className="flex items-center gap-2 font-semibold"
-          >
-            <div className={cn(
-              "flex h-8 w-8 items-center justify-center rounded-lg bg-gradient-to-br text-sm font-bold",
-              activeProvider?.accent || "from-rose-500 to-orange-500"
-            )}>
-              A
-            </div>
-            <span className="hidden sm:inline">Anime Scraper</span>
-          </button>
-
-          {/* Provider switcher */}
-          {providers.length > 0 && (
-            <Select value={providerId} onValueChange={setProviderId}>
-              <SelectTrigger className="h-8 w-32 border-white/10 bg-white/5 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {providers.map((p) => (
-                  <SelectItem key={p.id} value={p.id}>
-                    {p.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-
-          <div className="relative ml-auto w-full max-w-md">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-zinc-500" />
-            <Input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder={`Search anime on ${activeProvider?.label || "…"}…`}
-              className="border-white/10 bg-white/5 pl-9 focus-visible:border-rose-500/50 focus-visible:ring-rose-500/30"
-            />
-            {searching && (
-              <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-zinc-500" />
-            )}
-          </div>
-
-          <Link
-            href="/animetsu-id"
-            className="hidden shrink-0 items-center gap-1.5 rounded-md border border-rose-500/30 bg-rose-500/10 px-3 py-1.5 text-xs text-rose-300 transition-colors hover:bg-rose-500/20 hover:text-rose-200 sm:flex"
-            title="Find the animetsu native id for any AniList ID"
-          >
-            <Search className="h-3.5 w-3.5" />
-            Animetsu ID Finding
-          </Link>
-
-          <Link
-            href="/docs"
-            className="hidden shrink-0 items-center gap-1.5 rounded-md border border-white/10 bg-white/5 px-3 py-1.5 text-xs text-zinc-300 transition-colors hover:bg-white/10 hover:text-white sm:flex"
-            title="API documentation"
-          >
-            <BookOpen className="h-3.5 w-3.5" />
-            API Docs
-          </Link>
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-7xl flex-1 px-4 py-6">
-        {error && (
-          <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-            {error}
-          </div>
-        )}
-
-        {/* SEARCH RESULTS — only shown on home view */}
-        {searchResults && view.kind === "home" ? (
-          <section>
-            <h2 className="mb-4 text-lg font-semibold">
-              Search results {searchResults.length > 0 && `(${searchResults.length})`}
-            </h2>
-            {searchResults.length === 0 ? (
-              <p className="text-sm text-zinc-500">No results found on {activeProvider?.label}.</p>
-            ) : (
-              <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-                {searchResults.map((a) => (
-                  <AnimeCard
-                    key={a.id}
-                    a={normalizeSearchResult(a)}
-                    onClick={() => setView({ kind: "details", id: a.id })}
-                  />
-                ))}
-              </div>
-            )}
-          </section>
-        ) : view.kind === "home" ? (
-          <HomeView
-            trending={trending}
-            recent={recent}
-            onPick={(id) => {
-              if (id.startsWith("al:")) {
-                const title = decodeURIComponent(id.slice(3));
-                void resolveBySearch(title);
-              } else {
-                setView({ kind: "details", id });
-              }
-            }}
-          />
-        ) : view.kind === "details" ? (
-          <DetailsView
-            info={info}
-            episodes={episodes}
-            loading={infoLoading}
-            onBack={() => setView({ kind: "home" })}
-            onWatch={(ep) => setView({ kind: "watch", id: view.id, ep })}
-          />
-        ) : view.kind === "watch" ? (
-          <WatchView
-            info={info}
-            view={view}
-            setView={setView}
-            episodes={episodes}
-            currentEp={currentEp}
-            servers={servers}
-            setServer={setServer}
-            server={server}
-            sourceType={sourceType}
-            setSourceType={setSourceType}
-            sourcesLoading={sourcesLoading}
-            sources={sources}
-            primarySource={primarySource}
-            mp4Qualities={mp4Qualities}
-            activeProvider={activeProvider}
-            onNextEp={onNextEp}
-          />
-        ) : null}
-      </main>
-
-      <footer className="mt-auto border-t border-white/10 bg-zinc-950 px-4 py-6 text-center text-xs text-zinc-500">
-        <p>
-          Anime Scraper · {providers.length} providers ·{" "}
-          {providers.map((p) => p.label).join(" · ")}
-        </p>
-        <p className="mt-1">
-          Educational project. Streams proxied from upstream providers for personal use only.
-        </p>
-      </footer>
-    </div>
-  );
-}
+type ActionType = "scrape" | "streams" | "raw" | "multi";
+type KindType = "movie" | "tv";
+type SourceType = "auto" | "justhd" | "vidsrc" | "vidfast";
+type TabType = "scraper" | "vidlink" | "test" | "docs";
 
 /* ------------------------------------------------------------------ */
+/*  Component                                                          */
+/* ------------------------------------------------------------------ */
 
-/** Normalize both the new unified shape and the old animetsu shape to the card shape. */
-function normalizeSearchResult(a: SearchResult): SearchResult {
-  return {
-    id: a.id,
-    title: a.title,
-    coverImage: a.coverImage || (a.cover_image ? { large: a.cover_image.large, color: a.cover_image.color } : undefined),
-    banner: a.banner,
-    status: a.status,
-    year: a.year,
-    format: a.format,
-    genres: a.genres,
-    averageScore: a.averageScore ?? a.average_score,
-    totalEpisodes: a.totalEpisodes ?? a.total_eps,
-    isAdult: a.isAdult,
-    duration: a.duration,
-    season: a.season,
+export default function VidfastPage() {
+  const [tab, setTab] = useState<TabType>("scraper");
+  const [tmdbId, setTmdbId] = useState("1265609");
+  const [kind, setKind] = useState<KindType>("movie");
+  const [season, setSeason] = useState("1");
+  const [episode, setEpisode] = useState("1");
+  const [action, setAction] = useState<ActionType>("scrape");
+  const [source, setSource] = useState<SourceType>("auto");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<ScrapeResult | null>(null);
+  const [multiResults, setMultiResults] = useState<MultiSourceResult[] | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [showRaw, setShowRaw] = useState(false);
+  const [activeProvider, setActiveProvider] = useState<"vidfast" | "vidlink">("vidfast");
+
+  const scrape = useCallback(async () => {
+    setLoading(true);
+    setResult(null);
+    setMultiResults(null);
+    setShowRaw(false);
+
+    try {
+      const params = new URLSearchParams({
+        tmdb: tmdbId,
+        kind,
+        action,
+        ...(source !== "auto" ? { source } : {}),
+      });
+      if (kind === "tv") {
+        params.set("season", season);
+        params.set("episode", episode);
+      }
+
+      const apiRoute = activeProvider === "vidlink" ? "/api/vidlink" : "/api/vidfast";
+      const res = await fetch(`${apiRoute}?${params}`);
+      const data = await res.json();
+
+      if (action === "multi" && data.results) {
+        setMultiResults(data.results);
+      } else {
+        setResult(data);
+      }
+    } catch (err) {
+      setResult({
+        success: false,
+        error: err instanceof Error ? err.message : "Fetch failed",
+      });
+    } finally {
+      setLoading(false);
+    }
+  }, [tmdbId, kind, season, episode, action, source, activeProvider]);
+
+  const copyToClipboard = (text: string, id: string) => {
+    navigator.clipboard.writeText(text);
+    setCopied(id);
+    setTimeout(() => setCopied(null), 2000);
   };
-}
 
-function HomeView({
-  trending,
-  recent,
-  onPick,
-}: {
-  trending: SearchResult[];
-  recent: SearchResult[];
-  onPick: (id: string) => void;
-}) {
-  return (
-    <div className="space-y-10">
-      {trending.length > 0 && (
-        <section>
-          <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold">
-            <Flame className="h-5 w-5 text-rose-500" /> Trending Now
-          </h2>
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-            {trending.slice(0, 12).map((a) => (
-              <AnimeCard key={a.id} a={a} onClick={() => onPick(String(a.id))} trending />
-            ))}
-          </div>
-        </section>
-      )}
-      <section>
-        <h2 className="mb-4 flex items-center gap-2 text-lg font-semibold">
-          <Film className="h-5 w-5 text-orange-500" /> Recently Released
-        </h2>
-        {recent.length === 0 ? (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-            {Array.from({ length: 6 }).map((_, i) => (
-              <Skeleton key={i} className="aspect-[2/3] w-full rounded-lg bg-white/5" />
-            ))}
-          </div>
-        ) : (
-          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-            {recent.map((a) => (
-              <AnimeCard key={a.id} a={normalizeSearchResult(a)} onClick={() => onPick(a.id)} />
-            ))}
-          </div>
-        )}
-      </section>
-    </div>
-  );
-}
-
-function AnimeCard({
-  a,
-  onClick,
-  trending,
-}: {
-  a: SearchResult;
-  onClick: () => void;
-  trending?: boolean;
-}) {
-  const cover = a.coverImage?.large || a.coverImage?.cover || a.coverImage?.medium;
-  return (
+  const CopyBtn = ({ text, id }: { text: string; id: string }) => (
     <button
-      onClick={onClick}
-      className="group relative overflow-hidden rounded-lg border border-white/10 bg-white/5 text-left transition hover:border-white/30 hover:bg-white/10"
+      onClick={() => copyToClipboard(text, id)}
+      className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors"
+      title="Copy"
     >
-      <div className="relative aspect-[2/3] w-full overflow-hidden bg-zinc-800">
-        {cover ? (
-           
-          <img
-            src={cover}
-            alt={titleStr(a.title)}
-            loading="lazy"
-            className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
-          />
-        ) : (
-          <div className="flex h-full items-center justify-center text-2xl text-zinc-600">
-            {titleStr(a.title).charAt(0)}
-          </div>
-        )}
-        {trending && (
-          <Badge className="absolute left-1.5 top-1.5 bg-rose-500/90 px-1.5 py-0 text-[10px] text-white">
-            HOT
-          </Badge>
-        )}
-        {a.averageScore ? (
-          <Badge className="absolute right-1.5 top-1.5 bg-black/70 px-1.5 py-0 text-[10px] text-amber-400">
-            <Star className="mr-0.5 h-2.5 w-2.5 fill-amber-400" /> {a.averageScore}
-          </Badge>
-        ) : null}
-        <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent p-2">
-          <div className="line-clamp-2 text-xs font-medium text-white">
-            {titleStr(a.title)}
-          </div>
-        </div>
-      </div>
-      <div className="flex items-center justify-between px-2 py-1.5 text-[10px] text-zinc-500">
-        <span>{a.year ?? "—"}</span>
-        <span>{a.format ?? "TV"}</span>
-      </div>
+      {copied === id ? (
+        <Check className="w-3 h-3 text-green-400" />
+      ) : (
+        <Copy className="w-3 h-3 text-zinc-400" />
+      )}
     </button>
   );
-}
-
-function DetailsView({
-  info,
-  episodes,
-  loading,
-  onBack,
-  onWatch,
-}: {
-  info: AnimeInfo | null;
-  episodes: Episode[] | null;
-  loading: boolean;
-  onBack: () => void;
-  onWatch: (ep: number) => void;
-}) {
-  if (loading || !info) {
-    return (
-      <div className="space-y-4">
-        <Skeleton className="h-64 w-full rounded-xl bg-white/5" />
-        <div className="flex gap-4">
-          <Skeleton className="h-48 w-32 rounded-lg bg-white/5" />
-          <div className="flex-1 space-y-2">
-            <Skeleton className="h-6 w-2/3 bg-white/5" />
-            <Skeleton className="h-4 w-1/3 bg-white/5" />
-            <Skeleton className="h-20 w-full bg-white/5" />
-          </div>
-        </div>
-      </div>
-    );
-  }
-  return (
-    <div className="space-y-6">
-      <Button variant="ghost" size="sm" onClick={onBack}>
-        <ChevronLeft className="mr-1 h-4 w-4" /> Back
-      </Button>
-
-      {info.banner ? (
-         
-        <img
-          src={info.banner}
-          alt=""
-          className="h-48 w-full rounded-xl object-cover opacity-60 sm:h-64"
-        />
-      ) : null}
-
-      <div className="flex flex-col gap-6 sm:flex-row">
-        <div className="w-full shrink-0 sm:w-48">
-          { }
-          <img
-            src={info.coverImage?.large || info.coverImage?.cover || info.coverImage?.medium}
-            alt={titleStr(info.title)}
-            className="aspect-[2/3] w-full rounded-lg border border-white/10 object-cover"
-          />
-        </div>
-
-        <div className="flex-1 space-y-4">
-          <div>
-            <h1 className="text-2xl font-bold sm:text-3xl">{titleStr(info.title)}</h1>
-            {info.title.native && (
-              <p className="text-sm text-zinc-500">{info.title.native}</p>
-            )}
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            {info.status && <Badge>{info.status}</Badge>}
-            {info.format && <Badge variant="outline">{info.format}</Badge>}
-            {info.year && (
-              <Badge variant="outline">
-                <Calendar className="mr-1 h-3 w-3" /> {info.year}
-              </Badge>
-            )}
-            {info.totalEpisodes && (
-              <Badge variant="outline">
-                <Tv className="mr-1 h-3 w-3" /> {info.totalEpisodes} eps
-              </Badge>
-            )}
-            {info.averageScore ? (
-              <Badge variant="outline" className="text-amber-400">
-                <Star className="mr-1 h-3 w-3 fill-amber-400" /> {info.averageScore}
-              </Badge>
-            ) : null}
-            {info.isAdult && <Badge variant="destructive">18+</Badge>}
-          </div>
-
-          {(info.genres?.length) && (
-            <div className="flex flex-wrap gap-1.5">
-              {info.genres.slice(0, 8).map((g) => (
-                <Badge key={g} variant="secondary" className="text-[10px]">
-                  {g}
-                </Badge>
-              ))}
-            </div>
-          )}
-
-          {info.description && (
-            <p
-              className="text-sm leading-relaxed text-zinc-300"
-              dangerouslySetInnerHTML={{ __html: info.description }}
-            />
-          )}
-
-          {info.anilist?.studios?.nodes?.length ? (
-            <p className="text-xs text-zinc-500">
-              Studio:{" "}
-              {info.anilist.studios.nodes.map((s) => s.name).join(", ")}
-            </p>
-          ) : null}
-
-          {info.next_airing_ep?.ep_num && (
-            <Badge variant="outline" className="text-emerald-400">
-              Ep {info.next_airing_ep.ep_num} airs in{" "}
-              {Math.floor((info.next_airing_ep.time_left || 0) / 86400)}d{" "}
-              {Math.floor(((info.next_airing_ep.time_left || 0) % 86400) / 3600)}h
-            </Badge>
-          )}
-        </div>
-      </div>
-
-      {info.anilist?.trailer?.id && info.anilist.trailer.site === "youtube" && (
-        <div className="overflow-hidden rounded-xl border border-white/10 bg-black">
-          <iframe
-            src={`https://www.youtube.com/embed/${info.anilist.trailer.id}`}
-            title="Trailer"
-            className="aspect-video w-full"
-            allowFullScreen
-          />
-        </div>
-      )}
-
-      {info.anilist?.recommendations?.nodes?.length ? (
-        <section>
-          <h2 className="mb-3 text-lg font-semibold">Recommended</h2>
-          <div className="grid grid-cols-3 gap-3 sm:grid-cols-6">
-            {info.anilist.recommendations.nodes
-              .filter((r) => r.mediaRecommendation)
-              .slice(0, 6)
-              .map((r) => (
-                <div
-                  key={r.id}
-                  className="overflow-hidden rounded-lg border border-white/10 bg-white/5"
-                >
-                  { }
-                  <img
-                    src={r.mediaRecommendation!.coverImage?.large}
-                    alt=""
-                    className="aspect-[2/3] w-full object-cover"
-                  />
-                  <div className="p-1.5">
-                    <p className="line-clamp-2 text-[10px] text-zinc-400">
-                      {r.mediaRecommendation!.title.english ||
-                        r.mediaRecommendation!.title.romaji}
-                    </p>
-                  </div>
-                </div>
-              ))}
-          </div>
-        </section>
-      ) : null}
-
-      <section>
-        <div className="mb-3 flex items-center justify-between">
-          <h2 className="text-lg font-semibold">Episodes</h2>
-          {episodes && <span className="text-xs text-zinc-500">{episodes.length} total</span>}
-        </div>
-        {!episodes ? (
-          <Skeleton className="h-32 w-full rounded-lg bg-white/5" />
-        ) : episodes.length === 0 ? (
-          <p className="text-sm text-zinc-500">No episodes available.</p>
-        ) : (
-          <ScrollArea className="max-h-96 rounded-lg border border-white/10 bg-white/5 p-2">
-            <div className="space-y-1">
-              {episodes.map((e) => (
-                <button
-                  key={e.sourceId}
-                  onClick={() => onWatch(e.number)}
-                  className="flex w-full items-center gap-3 rounded-md border border-white/5 bg-white/5 p-2 text-left transition hover:border-white/20 hover:bg-white/10"
-                >
-                  <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-rose-500/20 text-sm font-semibold text-rose-400">
-                    {e.displayNumber || e.number}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <p className="truncate text-sm font-medium">{e.title || `Episode ${e.number}`}</p>
-                      {e.filler && (
-                        <Badge className="bg-amber-500/20 px-1 py-0 text-[9px] text-amber-400">filler</Badge>
-                      )}
-                    </div>
-                    {e.description && (
-                      <p className="line-clamp-1 text-xs text-zinc-500">{e.description}</p>
-                    )}
-                  </div>
-                  <Play className="h-4 w-4 text-zinc-500" />
-                </button>
-              ))}
-            </div>
-          </ScrollArea>
-        )}
-      </section>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Watch view — player + raw response panel + episode picker         */
-/* ------------------------------------------------------------------ */
-
-interface WatchViewProps {
-  info: AnimeInfo | null;
-  view: { kind: "watch"; id: string; ep: number };
-  setView: (v: View) => void;
-  episodes: Episode[] | null;
-  currentEp?: Episode;
-  servers: ServerInfo[];
-  setServer: (s: string) => void;
-  server: string;
-  sourceType: "sub" | "dub";
-  setSourceType: (t: "sub" | "dub") => void;
-  sourcesLoading: boolean;
-  sources: SourcesPayload | null;
-  primarySource?: StreamSource;
-  mp4Qualities: Quality[];
-  activeProvider?: ProviderMeta;
-  onNextEp: () => void;
-}
-
-function WatchView({
-  info,
-  view,
-  setView,
-  episodes,
-  currentEp,
-  servers,
-  setServer,
-  server,
-  sourceType,
-  setSourceType,
-  sourcesLoading,
-  sources,
-  primarySource,
-  mp4Qualities,
-  activeProvider,
-  onNextEp,
-}: WatchViewProps) {
-  const [showRaw, setShowRaw] = useState(false);
 
   return (
-    <div className="space-y-5">
-      {/* Top bar — back + server + sub/dub selectors */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => setView({ kind: "details", id: view.id })}
-        >
-          <ChevronLeft className="mr-1 h-4 w-4" /> Back to details
-        </Button>
-        <div className="flex items-center gap-2">
-          {servers.length > 0 && (
-            <Select value={server} onValueChange={setServer}>
-              <SelectTrigger className="h-9 w-40 border-white/10 bg-white/5 text-xs">
-                <Server className="mr-1.5 h-3.5 w-3.5 text-zinc-400" />
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {servers.map((s) => (
-                  <SelectItem key={s.id} value={s.id}>
-                    {s.label || s.id} {s.default ? "(default)" : ""}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          <Select value={sourceType} onValueChange={(v) => setSourceType(v as "sub" | "dub")}>
-            <SelectTrigger className="h-9 w-24 border-white/10 bg-white/5 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="sub">Sub</SelectItem>
-              <SelectItem value="dub">Dub</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-      </div>
-
-      {/* Title + status badge */}
-      <div className="flex flex-wrap items-baseline gap-2 text-sm text-zinc-300">
-        <span className="text-base font-semibold text-white">
-          {info ? titleStr(info.title) : "Loading…"}
-        </span>
-        <span className="text-zinc-500">·</span>
-        <span>Episode {view.ep}</span>
-        {currentEp?.title && (
-          <>
-            <span className="text-zinc-500">·</span>
-            <span className="italic text-zinc-400">{currentEp.title}</span>
-          </>
-        )}
-        {sources && primarySource && (
-          <Badge
-            variant="outline"
-            className="ml-1 border-white/15 bg-white/5 text-[10px] font-mono text-zinc-300"
-          >
-            {sources.server} · {primarySource.type?.toUpperCase()}
-          </Badge>
-        )}
-      </div>
-
-      {/* Player card */}
-      <div className="overflow-hidden rounded-2xl border border-white/10 bg-zinc-900/50 shadow-2xl shadow-black/50">
-        {sourcesLoading ? (
-          <div className="flex aspect-video w-full items-center justify-center bg-black text-sm text-zinc-500">
-            <Loader2 className="mr-2 h-5 w-5 animate-spin" />
-            Loading stream from {activeProvider?.label}…
-          </div>
-        ) : primarySource ? (
-          <MediaPlayer
-            source={primarySource}
-            qualities={primarySource.type === "mp4" ? mp4Qualities : sources?.qualities}
-            subtitles={sources?.subtitles || []}
-            skips={sources?.skips}
-            poster={info?.banner || info?.coverImage?.large}
-            title={`${titleStr(info?.title)} — Ep ${view.ep}`}
-            onEnded={onNextEp}
-          />
-        ) : (
-          <div className="flex aspect-video w-full items-center justify-center bg-black text-sm text-zinc-500">
-            No stream available. Try a different server.
-          </div>
-        )}
-      </div>
-
-      {/* Action row — show raw response toggle */}
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant={showRaw ? "default" : "outline"}
-          size="sm"
-          onClick={() => setShowRaw((s) => !s)}
-          className="font-mono text-xs"
-        >
-          <Code2 className="mr-1.5 h-3.5 w-3.5" />
-          {showRaw ? "Hide raw response" : "Show raw response"}
-          {showRaw ? <ChevronUp className="ml-1 h-3 w-3" /> : <ChevronDown className="ml-1 h-3 w-3" />}
-        </Button>
-        {sources?.raw !== undefined && (
-          <Badge variant="outline" className="text-[10px] text-zinc-400">
-            {sources?.rawMulti
-              ? `${Object.keys(sources.rawMulti).length} upstreams probed`
-              : "raw payload attached"}
-          </Badge>
-        )}
-        <a
-          href={`/api/scrape/raw?provider=${sources?.provider || activeProvider?.id}&id=${view.id}&ep=${view.ep}&server=${server}&type=${sourceType}`}
-          target="_blank"
-          rel="noreferrer"
-          className="ml-auto text-xs text-zinc-400 underline-offset-4 hover:text-zinc-200 hover:underline"
-        >
-          Open /api/scrape/raw ↗
-        </a>
-      </div>
-
-      {/* Raw response panel — collapsible */}
-      {showRaw && (
-        <RawResponsePanel
-          raw={sources?.raw}
-          rawMulti={sources?.rawMulti}
-          provider={sources?.provider || activeProvider?.id || "unknown"}
-          animeId={view.id}
-          ep={view.ep}
-          server={server}
-          streamType={sourceType}
-        />
-      )}
-
-      {/* Episode picker */}
-      {episodes && episodes.length > 0 && (
-        <div>
-          <h3 className="mb-2 text-sm font-semibold text-zinc-300">Episodes</h3>
-          <ScrollArea className="max-h-72 rounded-lg border border-white/10 bg-white/5 p-2">
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8">
-              {episodes.map((e) => (
-                <button
-                  key={e.sourceId}
-                  onClick={() => setView({ kind: "watch", id: view.id, ep: e.number })}
-                  className={cn(
-                    "rounded-md border px-2 py-1.5 text-xs font-medium transition",
-                    e.number === view.ep
-                      ? "border-rose-500 bg-rose-500/20 text-white"
-                      : "border-white/10 bg-white/5 text-zinc-300 hover:border-white/30 hover:bg-white/10"
-                  )}
-                >
-                  Ep {e.displayNumber || e.number}
-                  {e.filler && (
-                    <span className="ml-1 text-[10px] text-amber-400">filler</span>
-                  )}
-                </button>
-              ))}
+    <div className="min-h-screen bg-zinc-950 text-white">
+      {/* Header */}
+      <div className="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center">
+              <Zap className="w-5 h-5 text-black" />
             </div>
-          </ScrollArea>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Raw response panel — pretty-printed JSON with copy button         */
-/* ------------------------------------------------------------------ */
-
-interface RawResponsePanelProps {
-  raw?: unknown;
-  rawMulti?: Record<string, unknown>;
-  provider: string;
-  animeId: string;
-  ep: number;
-  server: string;
-  streamType: "sub" | "dub";
-}
-
-function RawResponsePanel({
-  raw,
-  rawMulti,
-  provider,
-  animeId,
-  ep,
-  server,
-  streamType,
-}: RawResponsePanelProps) {
-  const [copied, setCopied] = useState(false);
-  const [activeTab, setActiveTab] = useState<"raw" | "rawMulti" | "unified">("raw");
-
-  // If raw is missing but rawMulti exists, default to rawMulti tab.
-  useEffect(() => {
-    if (raw == null && rawMulti && Object.keys(rawMulti).length > 0) {
-      setActiveTab("rawMulti");
-    }
-  }, [raw, rawMulti]);
-
-  const payload = useMemo(() => {
-    if (activeTab === "raw") return raw;
-    if (activeTab === "rawMulti") return rawMulti;
-    // For unified, the panel doesn't have access — show metadata instead.
-    return {
-      provider,
-      animeId,
-      episode: ep,
-      server,
-      streamType,
-      note: "Use the /api/scrape/raw endpoint to see the unified sources + raw side by side.",
-    };
-  }, [activeTab, raw, rawMulti, provider, animeId, ep, server, streamType]);
-
-  const jsonString = useMemo(() => {
-    try {
-      return payload == null ? "null" : JSON.stringify(payload, null, 2);
-    } catch {
-      return String(payload);
-    }
-  }, [payload]);
-
-  const onCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(jsonString);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* ignore */
-    }
-  }, [jsonString]);
-
-  const tabs: Array<{ id: "raw" | "rawMulti" | "unified"; label: string; count?: number }> = [
-    { id: "raw", label: "raw" },
-    { id: "rawMulti", label: "rawMulti", count: rawMulti ? Object.keys(rawMulti).length : undefined },
-    { id: "unified", label: "meta" },
-  ];
-
-  return (
-    <div className="overflow-hidden rounded-xl border border-white/10 bg-zinc-950">
-      {/* Header — tabs + actions */}
-      <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-3 py-2">
-        <div className="flex items-center gap-1">
-          {tabs.map((t) => {
-            const disabled =
-              (t.id === "raw" && raw == null) ||
-              (t.id === "rawMulti" && (!rawMulti || Object.keys(rawMulti).length === 0));
-            return (
+            <div>
+              <h1 className="text-lg font-bold bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent">
+                Vidfast Scraper
+              </h1>
+              <p className="text-[10px] text-zinc-500 -mt-0.5">Raw m3u8 + CORS Proxy + Vidlink</p>
+            </div>
+          </div>
+          <div className="flex gap-1">
+            {([
+              { id: "scraper" as TabType, icon: Zap, label: "Scraper" },
+              { id: "vidlink" as TabType, icon: Link2, label: "Vidlink" },
+              { id: "test" as TabType, icon: Terminal, label: "Test Lab" },
+              { id: "docs" as TabType, icon: BookOpen, label: "API Docs" },
+            ]).map((t) => (
               <button
                 key={t.id}
-                onClick={() => !disabled && setActiveTab(t.id)}
-                disabled={disabled}
+                onClick={() => setTab(t.id)}
                 className={cn(
-                  "rounded-md px-2.5 py-1 font-mono text-[11px] transition",
-                  activeTab === t.id
-                    ? "bg-zinc-100 text-zinc-900"
-                    : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200",
-                  disabled && "cursor-not-allowed opacity-40 hover:bg-transparent hover:text-zinc-400"
+                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
+                  tab === t.id
+                    ? "bg-yellow-500/15 text-yellow-400 border border-yellow-500/30"
+                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
                 )}
               >
+                <t.icon className="w-3.5 h-3.5" />
                 {t.label}
-                {t.count !== undefined && (
-                  <span className="ml-1 text-[9px] opacity-70">({t.count})</span>
-                )}
               </button>
-            );
-          })}
+            ))}
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="hidden font-mono text-[10px] text-zinc-500 sm:inline">
-            {provider} · ep{ep} · {server}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onCopy}
-            className="h-7 px-2 font-mono text-[11px]"
-          >
-            {copied ? (
-              <>
-                <Check className="mr-1 h-3 w-3 text-emerald-400" /> Copied
-              </>
-            ) : (
-              <>
-                <Copy className="mr-1 h-3 w-3" /> Copy
-              </>
+      </div>
+
+      <div className="max-w-7xl mx-auto px-4 py-6">
+        {/* ==================== SCRAPER TAB ==================== */}
+        {tab === "scraper" && (
+          <div className="space-y-6">
+            {/* Search Controls */}
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Film className="w-5 h-5 text-yellow-400" />
+                <h2 className="text-lg font-bold">Vidfast M3U8 Scraper</h2>
+                <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/30 text-[10px]">
+                  vidfast.pro
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                <div className="md:col-span-2">
+                  <label className="text-xs text-zinc-400 mb-1 block">TMDB ID</label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={tmdbId}
+                      onChange={(e) => setTmdbId(e.target.value)}
+                      placeholder="e.g. 1265609"
+                      className="bg-zinc-800 border-zinc-700 text-white"
+                    />
+                    <Button
+                      onClick={scrape}
+                      disabled={loading || !tmdbId}
+                      className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold shrink-0"
+                    >
+                      {loading ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Search className="w-4 h-4" />
+                      )}
+                      {loading ? "Scraping..." : "Scrape"}
+                    </Button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-zinc-400 mb-1 block">Type</label>
+                  <div className="flex gap-1">
+                    {(["movie", "tv"] as KindType[]).map((k) => (
+                      <button
+                        key={k}
+                        onClick={() => setKind(k)}
+                        className={cn(
+                          "flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+                          kind === k
+                            ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
+                            : "bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700"
+                        )}
+                      >
+                        {k === "movie" ? (
+                          <span className="flex items-center gap-1">
+                            <Film className="w-3 h-3" /> Movie
+                          </span>
+                        ) : (
+                          <span className="flex items-center gap-1">
+                            <Tv className="w-3 h-3" /> TV
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-xs text-zinc-400 mb-1 block">Source</label>
+                  <select
+                    value={source}
+                    onChange={(e) => setSource(e.target.value as SourceType)}
+                    className="w-full bg-zinc-800 border border-zinc-700 text-white rounded-lg px-3 py-2 text-sm"
+                  >
+                    <option value="auto">Auto</option>
+                    <option value="justhd">JustHD</option>
+                    <option value="vidsrc">VidSrc</option>
+                    <option value="vidfast">Vidfast</option>
+                  </select>
+                </div>
+              </div>
+
+              {kind === "tv" && (
+                <div className="flex gap-4">
+                  <div>
+                    <label className="text-xs text-zinc-400 mb-1 block">Season</label>
+                    <Input value={season} onChange={(e) => setSeason(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-zinc-400 mb-1 block">Episode</label>
+                    <Input value={episode} onChange={(e) => setEpisode(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                {([
+                  { a: "scrape" as ActionType, label: "Full Scrape", desc: "Meta + m3u8 + raw" },
+                  { a: "streams" as ActionType, label: "Streams Only", desc: "Fast m3u8 URLs" },
+                  { a: "raw" as ActionType, label: "Raw M3U8", desc: "Raw playlist content" },
+                  { a: "multi" as ActionType, label: "All Sources", desc: "Try all providers" },
+                ]).map((item) => (
+                  <button
+                    key={item.a}
+                    onClick={() => setAction(item.a)}
+                    className={cn(
+                      "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
+                      action === item.a
+                        ? "bg-yellow-500 text-black"
+                        : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                    )}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Error */}
+            {result && !result.success && result.error && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
+                <p className="font-semibold">Error</p>
+                <p className="text-sm mt-1">{result.error}</p>
+              </div>
             )}
-          </Button>
-        </div>
-      </div>
 
-      {/* JSON body */}
-      <div className="max-h-[28rem] overflow-auto">
-        <pre
-          className="p-4 font-mono text-[11px] leading-relaxed text-zinc-300"
-          dangerouslySetInnerHTML={{ __html: syntaxHighlight(jsonString) }}
-        />
-      </div>
+            {/* Metadata Card */}
+            {result?.success && (result.meta || result.title) && (
+              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
+                <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
+                  <Film className="w-5 h-5 text-yellow-400" />
+                  {result.meta?.title || result.title || "Unknown"}
+                  {result.meta?.year && (
+                    <span className="text-zinc-500 text-sm">({result.meta.year})</span>
+                  )}
+                </h2>
+                {result.meta?.backdrop && (
+                  <div className="mb-3 rounded-lg overflow-hidden h-32 bg-zinc-800">
+                    <img
+                      src={result.meta.backdrop}
+                      alt="backdrop"
+                      className="w-full h-full object-cover opacity-70"
+                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+                    />
+                  </div>
+                )}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                  {result.meta?.enToken && (
+                    <div>
+                      <span className="text-zinc-500">EN Token</span>
+                      <p className="text-yellow-400 font-mono text-xs truncate">
+                        {result.meta.enToken.substring(0, 30)}...
+                      </p>
+                    </div>
+                  )}
+                  {result.meta?.host && (
+                    <div>
+                      <span className="text-zinc-500">Host</span>
+                      <p className="text-white">{result.meta.host}</p>
+                    </div>
+                  )}
+                  {result.imdbId && (
+                    <div>
+                      <span className="text-zinc-500">IMDB</span>
+                      <p className="text-white">{result.imdbId}</p>
+                    </div>
+                  )}
+                  {result.fileName && (
+                    <div className="col-span-2 md:col-span-4">
+                      <span className="text-zinc-500">File</span>
+                      <p className="text-zinc-300 font-mono text-xs truncate">
+                        {result.fileName}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
 
-      {/* Footer — direct API link */}
-      <div className="border-t border-white/10 bg-white/5 px-3 py-2">
-        <a
-          href={`/api/scrape/raw?provider=${provider}&id=${encodeURIComponent(animeId)}&ep=${ep}&server=${encodeURIComponent(server)}&type=${streamType}`}
-          target="_blank"
-          rel="noreferrer"
-          className="font-mono text-[10px] text-zinc-400 underline-offset-4 hover:text-zinc-200 hover:underline"
-        >
-          GET /api/scrape/raw?provider={provider}&id={animeId}&ep={ep}&server={server}&type={streamType} ↗
-        </a>
+            {/* Stream Sources */}
+            {result?.success && (result.sources?.length ?? 0) > 0 && (
+              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
+                <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+                  <Server className="w-5 h-5 text-green-400" />
+                  m3u8 Stream URLs
+                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
+                    {result.sources?.length} streams
+                  </Badge>
+                </h2>
+                <div className="space-y-3">
+                  {result.sources?.map((s, i) => (
+                    <div key={i} className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Badge className={s.type === "master" ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" : "bg-blue-500/20 text-blue-400 border-blue-500/30"}>
+                            {s.type}
+                          </Badge>
+                          <span className="text-sm text-zinc-300">{s.quality}</span>
+                        </div>
+                        <div className="flex gap-1">
+                          <CopyBtn text={s.url} id={`src-${i}`} />
+                          <a
+                            href={s.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors"
+                            title="Open"
+                          >
+                            <ExternalLink className="w-3 h-3 text-zinc-400" />
+                          </a>
+                        </div>
+                      </div>
+                      <p className="text-xs font-mono text-zinc-500 break-all">{s.url}</p>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Proxied URLs */}
+                {result.proxiedSources && result.proxiedSources.length > 0 && (
+                  <div className="mt-6">
+                    <h3 className="text-md font-semibold mb-3 flex items-center gap-2">
+                      <Play className="w-4 h-4 text-blue-400" />
+                      Proxied URLs (CORS-ready)
+                    </h3>
+                    <div className="space-y-2">
+                      {result.proxiedSources.map((s, i) => (
+                        <div key={`proxy-${i}`} className="flex items-center gap-2 bg-zinc-800/50 rounded-lg px-3 py-2">
+                          <Badge variant="outline" className="text-blue-400 border-blue-500/30 text-xs shrink-0">
+                            {s.quality}
+                          </Badge>
+                          <p className="text-xs font-mono text-zinc-400 truncate flex-1">{s.url}</p>
+                          <CopyBtn text={s.url} id={`proxy-${i}`} />
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Proxy M3U8 URL */}
+                {result.proxyM3u8Url && (
+                  <div className="mt-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
+                    <span className="text-xs text-yellow-400 font-semibold block mb-1">
+                      HLS.js-ready Proxy URL
+                    </span>
+                    <div className="flex items-center gap-2">
+                      <code className="text-xs text-yellow-300 font-mono flex-1 break-all">
+                        {result.proxyM3u8Url}
+                      </code>
+                      <CopyBtn text={result.proxyM3u8Url} id="proxy-master" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Raw M3U8 Content */}
+            {result?.rawM3u8 && (
+              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
+                <div className="flex items-center justify-between mb-3">
+                  <h2 className="text-lg font-bold flex items-center gap-2">
+                    <Code2 className="w-5 h-5 text-purple-400" />
+                    Raw M3U8 Playlist
+                  </h2>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setShowRaw(!showRaw)}
+                      className="text-sm text-zinc-400 hover:text-white transition-colors flex items-center gap-1"
+                    >
+                      {showRaw ? <><ChevronUp className="w-4 h-4" /> Hide</> : <><ChevronDown className="w-4 h-4" /> Show</>}
+                    </button>
+                    <CopyBtn text={result.rawM3u8!} id="raw-m3u8" />
+                  </div>
+                </div>
+                {showRaw && (
+                  <pre className="bg-zinc-950 rounded-lg p-4 overflow-x-auto text-xs font-mono text-green-400 whitespace-pre-wrap max-h-96 overflow-y-auto">
+                    {result.rawM3u8}
+                  </pre>
+                )}
+              </div>
+            )}
+
+            {/* Multi Source Results */}
+            {multiResults && (
+              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
+                <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+                  <Server className="w-5 h-5 text-blue-400" />
+                  All Sources Comparison
+                </h2>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {multiResults.map((mr, i) => (
+                    <div
+                      key={i}
+                      className={cn(
+                        "bg-zinc-800 rounded-lg p-4 border",
+                        mr.success ? "border-green-500/30" : "border-red-500/30"
+                      )}
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="font-semibold text-white">{mr.source}</span>
+                        <Badge className={mr.success ? "bg-green-500/20 text-green-400 border-green-500/30" : "bg-red-500/20 text-red-400 border-red-500/30"}>
+                          {mr.success ? `${mr.sources.length} streams` : "Failed"}
+                        </Badge>
+                      </div>
+                      {mr.success && mr.proxiedSources[0] && (
+                        <div className="mt-2">
+                          <p className="text-xs text-zinc-500 mb-1">Master URL (proxied):</p>
+                          <code className="text-xs font-mono text-blue-400 break-all">
+                            {mr.proxiedSources[0].url}
+                          </code>
+                        </div>
+                      )}
+                      {mr.rawM3u8 && (
+                        <div className="mt-2">
+                          <details>
+                            <summary className="text-xs text-purple-400 cursor-pointer">Raw M3U8</summary>
+                            <pre className="text-[10px] font-mono text-green-400 mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap">
+                              {mr.rawM3u8}
+                            </pre>
+                          </details>
+                        </div>
+                      )}
+                      {mr.error && <p className="text-xs text-red-400 mt-1">{mr.error}</p>}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================== VIDLINK TAB ==================== */}
+        {tab === "vidlink" && (
+          <div className="space-y-6">
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-4">
+              <div className="flex items-center gap-2 mb-2">
+                <Link2 className="w-5 h-5 text-blue-400" />
+                <h2 className="text-lg font-bold">Vidlink M3U8 Scraper</h2>
+                <Badge className="bg-blue-500/15 text-blue-400 border-blue-500/30 text-[10px]">
+                  vidsrc / vidlink
+                </Badge>
+              </div>
+              <p className="text-sm text-zinc-400">
+                Uses the vaplayer.ru backend with the &quot;vidsrc&quot; source, which maps to the vidlink/vidsrc provider chain.
+                Returns raw m3u8 stream URLs and playlist content.
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="md:col-span-2">
+                  <label className="text-xs text-zinc-400 mb-1 block">TMDB ID</label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={tmdbId}
+                      onChange={(e) => setTmdbId(e.target.value)}
+                      placeholder="e.g. 1265609"
+                      className="bg-zinc-800 border-zinc-700 text-white"
+                    />
+                    <Button
+                      onClick={() => { setActiveProvider("vidlink"); scrape(); }}
+                      disabled={loading || !tmdbId}
+                      className="bg-blue-500 hover:bg-blue-600 text-white font-semibold shrink-0"
+                    >
+                      {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                      {loading ? "Scraping..." : "Scrape"}
+                    </Button>
+                  </div>
+                </div>
+                <div>
+                  <label className="text-xs text-zinc-400 mb-1 block">Type</label>
+                  <div className="flex gap-1">
+                    {(["movie", "tv"] as KindType[]).map((k) => (
+                      <button
+                        key={k}
+                        onClick={() => setKind(k)}
+                        className={cn(
+                          "flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
+                          kind === k
+                            ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+                            : "bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700"
+                        )}
+                      >
+                        {k === "movie" ? <span className="flex items-center gap-1"><Film className="w-3 h-3" /> Movie</span> : <span className="flex items-center gap-1"><Tv className="w-3 h-3" /> TV</span>}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {kind === "tv" && (
+                <div className="flex gap-4">
+                  <div>
+                    <label className="text-xs text-zinc-400 mb-1 block">Season</label>
+                    <Input value={season} onChange={(e) => setSeason(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
+                  </div>
+                  <div>
+                    <label className="text-xs text-zinc-400 mb-1 block">Episode</label>
+                    <Input value={episode} onChange={(e) => setEpisode(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex flex-wrap gap-2">
+                <button
+                  onClick={() => { setAction("streams"); }}
+                  className={cn(
+                    "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
+                    action === "streams" ? "bg-blue-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                  )}
+                >
+                  Streams Only
+                </button>
+                <button
+                  onClick={() => { setAction("raw"); }}
+                  className={cn(
+                    "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
+                    action === "raw" ? "bg-blue-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
+                  )}
+                >
+                  Raw M3U8
+                </button>
+              </div>
+            </div>
+
+            {/* Show results for vidlink tab */}
+            {result?.success && (result.sources?.length ?? 0) > 0 && (
+              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
+                <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+                  <Server className="w-5 h-5 text-blue-400" />
+                  Vidlink Streams
+                  <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">
+                    {result.sources?.length} streams
+                  </Badge>
+                </h2>
+                <div className="space-y-3">
+                  {result.sources?.map((s, i) => (
+                    <div key={i} className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <Badge className={s.type === "master" ? "bg-blue-500/20 text-blue-400 border-blue-500/30" : "bg-zinc-600/50 text-zinc-300"}>
+                            {s.type}
+                          </Badge>
+                          <span className="text-sm text-zinc-300">{s.quality}</span>
+                        </div>
+                        <div className="flex gap-1">
+                          <CopyBtn text={s.url} id={`vl-${i}`} />
+                          <a href={s.url} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors">
+                            <ExternalLink className="w-3 h-3 text-zinc-400" />
+                          </a>
+                        </div>
+                      </div>
+                      <p className="text-xs font-mono text-zinc-500 break-all">{s.url}</p>
+                    </div>
+                  ))}
+                </div>
+                {result.rawM3u8 && (
+                  <div className="mt-4">
+                    <details>
+                      <summary className="text-sm text-purple-400 cursor-pointer font-semibold">Raw M3U8 Playlist</summary>
+                      <pre className="bg-zinc-950 rounded-lg p-4 overflow-x-auto text-xs font-mono text-green-400 whitespace-pre-wrap max-h-96 overflow-y-auto mt-2">
+                        {result.rawM3u8}
+                      </pre>
+                    </details>
+                  </div>
+                )}
+                {result.proxyM3u8Url && (
+                  <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
+                    <span className="text-xs text-blue-400 font-semibold block mb-1">HLS.js Proxy URL</span>
+                    <div className="flex items-center gap-2">
+                      <code className="text-xs text-blue-300 font-mono flex-1 break-all">{result.proxyM3u8Url}</code>
+                      <CopyBtn text={result.proxyM3u8Url} id="vl-proxy" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            {result && !result.success && result.error && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
+                <p className="font-semibold">Error</p>
+                <p className="text-sm mt-1">{result.error}</p>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ==================== TEST LAB TAB ==================== */}
+        {tab === "test" && (
+          <div className="space-y-6">
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
+              <div className="flex items-center gap-2 mb-4">
+                <Terminal className="w-5 h-5 text-green-400" />
+                <h2 className="text-lg font-bold">Test Lab</h2>
+                <Badge className="bg-green-500/15 text-green-400 border-green-500/30 text-[10px]">
+                  Quick test endpoints
+                </Badge>
+              </div>
+
+              <div className="mb-4">
+                <label className="text-xs text-zinc-400 mb-1 block">TMDB ID for tests</label>
+                <Input
+                  value={tmdbId}
+                  onChange={(e) => setTmdbId(e.target.value)}
+                  placeholder="e.g. 1265609"
+                  className="bg-zinc-800 border-zinc-700 text-white max-w-xs"
+                />
+              </div>
+
+              <div className="space-y-3">
+                {[
+                  { label: "Vidfast Full Scrape", url: `/api/vidfast?tmdb=${tmdbId}&action=scrape`, color: "yellow" },
+                  { label: "Vidfast Streams", url: `/api/vidfast?tmdb=${tmdbId}&action=streams`, color: "yellow" },
+                  { label: "Vidfast Raw M3U8", url: `/api/vidfast?tmdb=${tmdbId}&action=raw`, color: "yellow" },
+                  { label: "Vidfast Multi Source", url: `/api/vidfast?tmdb=${tmdbId}&action=multi`, color: "yellow" },
+                  { label: "Vidfast Meta Only", url: `/api/vidfast?tmdb=${tmdbId}&action=meta`, color: "yellow" },
+                  { label: "Vidlink Streams", url: `/api/vidlink?tmdb=${tmdbId}&action=streams`, color: "blue" },
+                  { label: "Vidlink Raw M3U8", url: `/api/vidlink?tmdb=${tmdbId}&action=raw`, color: "blue" },
+                  { label: "Available Sources", url: `/api/vidfast?action=sources`, color: "green" },
+                ].map((test, i) => (
+                  <TestEndpoint key={i} label={test.label} url={test.url} color={test.color} copied={copied} setCopied={setCopied} />
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ==================== DOCS TAB ==================== */}
+        {tab === "docs" && (
+          <div className="space-y-6">
+            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
+              <div className="flex items-center gap-2 mb-6">
+                <BookOpen className="w-5 h-5 text-yellow-400" />
+                <h2 className="text-lg font-bold">API Reference</h2>
+              </div>
+
+              <div className="space-y-6">
+                <ApiSection
+                  title="Vidfast Scraper"
+                  color="yellow"
+                  endpoints={[
+                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=scrape", desc: "Full pipeline: meta + m3u8 URLs + raw playlist + proxied URLs" },
+                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=streams", desc: "Just m3u8 stream URLs (fastest)" },
+                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=raw", desc: "m3u8 URLs + raw playlist content" },
+                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=multi", desc: "Try all sources (justhd, vidsrc, auto, vidfast)" },
+                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=meta", desc: "Only scrape vidfast.pro for en token + metadata" },
+                    { method: "GET", path: "/api/vidfast?action=sources", desc: "List available sources" },
+                  ]}
+                  params={[
+                    { name: "tmdb", type: "string", required: true, desc: "TMDB movie/TV ID (e.g. 1265609)" },
+                    { name: "action", type: "scrape|streams|raw|multi|meta|sources", required: false, desc: "Action to perform (default: scrape)" },
+                    { name: "kind", type: "movie|tv", required: false, desc: "Media type (default: movie)" },
+                    { name: "source", type: "auto|justhd|vidsrc|vidfast", required: false, desc: "Vaplayer source (default: auto)" },
+                    { name: "season", type: "number", required: false, desc: "Season number (TV only)" },
+                    { name: "episode", type: "number", required: false, desc: "Episode number (TV only)" },
+                  ]}
+                />
+
+                <ApiSection
+                  title="Vidlink Scraper"
+                  color="blue"
+                  endpoints={[
+                    { method: "GET", path: "/api/vidlink?tmdb=ID&action=streams", desc: "Vidlink/vidsrc m3u8 stream URLs" },
+                    { method: "GET", path: "/api/vidlink?tmdb=ID&action=raw", desc: "Vidlink m3u8 + raw playlist content" },
+                  ]}
+                  params={[
+                    { name: "tmdb", type: "string", required: true, desc: "TMDB movie/TV ID" },
+                    { name: "action", type: "streams|raw", required: false, desc: "Action (default: streams)" },
+                    { name: "kind", type: "movie|tv", required: false, desc: "Media type (default: movie)" },
+                    { name: "source", type: "vidsrc|auto|justhd|vidfast", required: false, desc: "Vaplayer source (default: vidsrc)" },
+                    { name: "season", type: "number", required: false, desc: "Season (TV only)" },
+                    { name: "episode", type: "number", required: false, desc: "Episode (TV only)" },
+                  ]}
+                />
+
+                <ApiSection
+                  title="CORS Proxy"
+                  color="green"
+                  endpoints={[
+                    { method: "GET", path: "/api/proxy/m3u8?url={encoded}", desc: "Proxy any m3u8/segment URL with CORS headers and playlist URL rewriting" },
+                  ]}
+                  params={[
+                    { name: "url", type: "string", required: true, desc: "Encoded upstream URL to proxy" },
+                    { name: "referer", type: "string", required: false, desc: "Override Referer header sent upstream" },
+                    { name: "format", type: "m3u8|vtt", required: false, desc: "Force content format detection" },
+                  ]}
+                />
+
+                <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+                  <h3 className="font-semibold text-white mb-2 flex items-center gap-2">
+                    <Globe className="w-4 h-4 text-yellow-400" />
+                    HLS.js Usage
+                  </h3>
+                  <pre className="bg-zinc-950 rounded-lg p-4 text-xs font-mono text-green-400 overflow-x-auto">
+{`// Quick start with HLS.js
+import Hls from 'hls.js';
+
+const hls = new Hls();
+hls.loadSource('/api/proxy/m3u8?url=' + encodeURIComponent(masterUrl));
+hls.attachMedia(videoElement);
+
+// Or use the proxied URL directly from the API response:
+// result.proxiedSources[0].url → drop into HLS.js`}
+                  </pre>
+                </div>
+
+                <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+                  <h3 className="font-semibold text-white mb-2">How It Works</h3>
+                  <div className="space-y-2 text-sm text-zinc-300">
+                    <p><span className="text-yellow-400 font-mono">1.</span> Fetch vidfast.pro/movie/{"{tmdb_id}"} → parse RSC payload → extract encrypted <code className="text-yellow-300">en</code> token</p>
+                    <p><span className="text-yellow-400 font-mono">2.</span> Call streamdata.vaplayer.ru/api.php with TMDB ID → get m3u8 stream URLs</p>
+                    <p><span className="text-yellow-400 font-mono">3.</span> Return raw m3u8 URLs + playlist content through our CORS proxy</p>
+                    <p><span className="text-zinc-500 text-xs mt-2 block">The vaplayer.ru API is the shared backend for vidfast.pro, vidsrc.pm, nextgencloudfabric.com, and other VA Player sites.</span></p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-/**
- * Tiny JSON syntax highlighter — wraps tokens in <span> tags with colors.
- * Operates on the pretty-printed JSON string, so it's safe to render with
- * dangerouslySetInnerHTML inside a <pre><code> block.
- */
-function syntaxHighlight(json: string): string {
-  // Escape HTML first
-  const esc = json
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
-  return esc.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d+)?(?:[eE][+\-]?\d+)?)/g,
-    (match) => {
-      let cls = "text-amber-300"; // number
-      if (/^"/.test(match)) {
-        if (/:$/.test(match)) {
-          cls = "text-sky-400"; // key
-        } else {
-          cls = "text-emerald-300"; // string
-        }
-      } else if (/true|false/.test(match)) {
-        cls = "text-fuchsia-400"; // boolean
-      } else if (/null/.test(match)) {
-        cls = "text-zinc-500"; // null
-      }
-      return `<span class="${cls}">${match}</span>`;
+/* ------------------------------------------------------------------ */
+/*  Sub-components                                                     */
+/* ------------------------------------------------------------------ */
+
+function TestEndpoint({ label, url, color, copied, setCopied }: {
+  label: string;
+  url: string;
+  color: string;
+  copied: string | null;
+  setCopied: (v: string | null) => void;
+}) {
+  const [result, setResult] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [showResult, setShowResult] = useState(false);
+
+  const run = async () => {
+    setLoading(true);
+    setResult(null);
+    try {
+      const res = await fetch(url);
+      const data = await res.json();
+      setResult(JSON.stringify(data, null, 2));
+      setShowResult(true);
+    } catch (err) {
+      setResult(JSON.stringify({ error: err instanceof Error ? err.message : "Failed" }, null, 2));
+      setShowResult(true);
+    } finally {
+      setLoading(false);
     }
+  };
+
+  const colorClass = color === "yellow" ? "text-yellow-400" : color === "blue" ? "text-blue-400" : "text-green-400";
+  const bgClass = color === "yellow" ? "bg-yellow-500/15 border-yellow-500/30" : color === "blue" ? "bg-blue-500/15 border-blue-500/30" : "bg-green-500/15 border-green-500/30";
+
+  return (
+    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <Badge className={bgClass + " " + colorClass}>{label}</Badge>
+        </div>
+        <div className="flex gap-1">
+          <button
+            onClick={() => { navigator.clipboard.writeText(url); setCopied(`test-${label}`); setTimeout(() => setCopied(null), 2000); }}
+            className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors"
+            title="Copy URL"
+          >
+            {copied === `test-${label}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-zinc-400" />}
+          </button>
+          <button
+            onClick={run}
+            disabled={loading}
+            className="px-3 py-1 rounded-md bg-green-500/20 text-green-400 text-xs font-medium hover:bg-green-500/30 transition-colors disabled:opacity-50"
+          >
+            {loading ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "Run"}
+          </button>
+        </div>
+      </div>
+      <code className="text-xs font-mono text-zinc-400 break-all block">{url}</code>
+      {result && showResult && (
+        <div className="mt-3">
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-xs text-zinc-500">Response</span>
+            <button onClick={() => setShowResult(false)} className="text-xs text-zinc-500 hover:text-zinc-300">Hide</button>
+          </div>
+          <pre className="bg-zinc-950 rounded-lg p-3 overflow-x-auto text-[10px] font-mono text-green-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
+            {result}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ApiSection({ title, color, endpoints, params }: {
+  title: string;
+  color: string;
+  endpoints: { method: string; path: string; desc: string }[];
+  params: { name: string; type: string; required: boolean; desc: string }[];
+}) {
+  const colorClass = color === "yellow" ? "text-yellow-400 border-yellow-500/30" : color === "blue" ? "text-blue-400 border-blue-500/30" : "text-green-400 border-green-500/30";
+
+  return (
+    <div>
+      <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
+        <Badge className={colorClass}>{title}</Badge>
+      </h3>
+      <div className="space-y-2 mb-4">
+        {endpoints.map((ep, i) => (
+          <div key={i} className="flex items-start gap-3 bg-zinc-800/50 rounded-lg px-4 py-2">
+            <Badge variant="outline" className="text-green-400 border-green-500/30 text-[10px] shrink-0 mt-0.5">
+              {ep.method}
+            </Badge>
+            <div>
+              <code className="text-xs font-mono text-green-400">{ep.path}</code>
+              <p className="text-xs text-zinc-500 mt-0.5">{ep.desc}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="bg-zinc-800/30 rounded-lg p-3">
+        <p className="text-xs text-zinc-500 mb-2 font-semibold">Parameters</p>
+        <div className="space-y-1">
+          {params.map((p, i) => (
+            <div key={i} className="flex items-start gap-2 text-xs">
+              <code className="text-yellow-300 font-mono shrink-0">{p.name}</code>
+              <span className="text-zinc-500 shrink-0">{p.type}</span>
+              {p.required && <span className="text-red-400 shrink-0">required</span>}
+              <span className="text-zinc-400">{p.desc}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }

@@ -6,11 +6,11 @@
       "maxDuration": 60,
       "memory": 1024
     },
-    "src/app/api/scrape/sources/route.ts": {
-      "maxDuration": 30,
+    "src/app/api/vidfast/route.ts": {
+      "maxDuration": 60,
       "memory": 512
     },
-    "src/app/api/scrape/info/route.ts": {
+    "src/app/api/vidlink/route.ts": {
       "maxDuration": 30,
       "memory": 512
     }

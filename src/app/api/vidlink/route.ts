@@ -60,7 +60,7 @@ export async function GET(req: NextRequest) {
 
     const proxiedSources = sources.map((s) => ({
       ...s,
-      url: `/api/proxy/m3u8?url=${encodeURIComponent(s.url)}&referer=${encodeURIComponent("https://nextgencloudfabric.com/")}`,
+      url: `/api/proxy/m3u8?url=${encodeURIComponent(s.url)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`,
     }));
 
     const masterUrl = sources.find((s) => s.type === "master")?.url;
@@ -89,7 +89,7 @@ export async function GET(req: NextRequest) {
         sources,
         proxiedSources,
         proxyUrl: masterUrl
-          ? `/api/proxy/m3u8?url=${encodeURIComponent(masterUrl)}&referer=${encodeURIComponent("https://nextgencloudfabric.com/")}`
+          ? `/api/proxy/m3u8?url=${encodeURIComponent(masterUrl)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`
           : null,
         masterUrl,
         ...(rawM3u8 !== null ? { rawM3u8 } : {}),

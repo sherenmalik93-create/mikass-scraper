@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
-import { Toaster } from "@/components/ui/toaster";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -14,19 +13,14 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Animetsu Scraper — m3u8 + Subtitle Extractor",
-  description: "Self-hostable anime scraper for animetsu.live: extracts HLS m3u8 streams and VTT subtitles, enriched with AniList metadata.",
-  keywords: ["animetsu", "scraper", "m3u8", "HLS", "anime", "AniList", "Next.js"],
-  authors: [{ name: "Animetsu Scraper" }],
+  title: "Vidfast Scraper — m3u8 Stream Extractor",
+  description: "Extract raw m3u8 stream URLs and playlist content from vidfast.pro and vidlink providers via vaplayer.ru backend API. CORS proxy included.",
+  keywords: ["vidfast", "vidlink", "scraper", "m3u8", "HLS", "TMDB", "streaming", "Next.js"],
+  authors: [{ name: "Vidfast Scraper" }],
   openGraph: {
-    title: "Animetsu Scraper",
-    description: "Self-hostable anime scraper with m3u8 + subtitle extraction.",
+    title: "Vidfast Scraper",
+    description: "Raw m3u8 stream extractor for vidfast.pro and vidlink.",
     type: "website",
-  },
-  twitter: {
-    card: "summary_large_image",
-    title: "Animetsu Scraper",
-    description: "Self-hostable anime scraper with m3u8 + subtitle extraction.",
   },
 };
 
@@ -41,7 +35,6 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased bg-background text-foreground`}
       >
         {children}
-        <Toaster />
       </body>
     </html>
   );
