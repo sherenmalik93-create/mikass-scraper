@@ -237,6 +237,8 @@ export default function MkissaScraperPage() {
   const [translationType, setTranslationType] = useState<'sub' | 'dub'>('sub');
   const [streams, setStreams] = useState<StreamInfo[]>([]);
   const [episodeData, setEpisodeData] = useState<any>(null);
+  const [extractedStreams, setExtractedStreams] = useState<StreamInfo[]>([]);
+  const [extracting, setExtracting] = useState(false);
 
   const [playerSrc, setPlayerSrc] = useState<string | null>(null);
   const [playerTitle, setPlayerTitle] = useState<string>('');
@@ -286,6 +288,7 @@ export default function MkissaScraperPage() {
     setLoading(true);
     setError(null);
     setStreams([]);
+    setExtractedStreams([]);
     setEpisodeData(null);
     try {
       const res = await fetch(`/api/mkissa/streams?showId=${selectedShow._id}&episode=${episodeNum}&type=${translationType}`);
@@ -294,6 +297,25 @@ export default function MkissaScraperPage() {
       else setError(data.error || 'Failed to load episode');
     } catch (err: any) { setError(err.message); }
     setLoading(false);
+  };
+
+  const extractPlayableStreams = async () => {
+    if (!selectedShow?._id || !episodeNum) return;
+    setExtracting(true);
+    setError(null);
+    setExtractedStreams([]);
+    try {
+      const res = await fetch(`/api/mkissa/streams?showId=${selectedShow._id}&episode=${episodeNum}&type=${translationType}&extract=true`);
+      const data = await res.json();
+      if (data.success && data.extractedStreams?.length > 0) {
+        setExtractedStreams(data.extractedStreams);
+      } else if (data.success) {
+        setError('No playable m3u8/mp4 streams could be extracted from embeds. Try opening the iframe URLs in your browser.');
+      } else {
+        setError(data.error || 'Extraction failed');
+      }
+    } catch (err: any) { setError(err.message); }
+    setExtracting(false);
   };
 
   const playStream = (stream: StreamInfo) => {
@@ -534,6 +556,15 @@ export default function MkissaScraperPage() {
                         <Button onClick={loadEpisode} disabled={loading} className="bg-red-600 hover:bg-red-700">
                           <Play className="w-4 h-4 mr-1" /> Load Streams
                         </Button>
+                        {streams.length > 0 && (
+                          <Button onClick={extractPlayableStreams} disabled={extracting} variant="outline" className="border-green-600 text-green-400 hover:bg-green-950/50">
+                            {extracting ? (
+                              <><RefreshCw className="w-4 h-4 mr-1 animate-spin" /> Extracting...</>
+                            ) : (
+                              <><Zap className="w-4 h-4 mr-1" /> Extract m3u8</>
+                            )}
+                          </Button>
+                        )}
                       </div>
 
                       {loading && (
@@ -621,6 +652,40 @@ export default function MkissaScraperPage() {
                               <p><strong className="text-green-400">M3U8/MP4</strong> sources can be played directly through the built-in HLS player.</p>
                             </div>
                           </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Extracted Playable Streams */}
+                  {extractedStreams.length > 0 && (
+                    <Card className="bg-green-950/30 border-green-700">
+                      <CardHeader>
+                        <CardTitle className="text-lg flex items-center gap-2">
+                          <Zap className="w-5 h-5 text-green-400" /> Playable Streams (Extracted)
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-3">
+                          {extractedStreams.map((stream, i) => (
+                            <div key={i} className="flex items-center justify-between p-3 rounded-lg border border-green-700 bg-green-950/30">
+                              <div className="flex items-center gap-3">
+                                <Play className="w-5 h-5 text-green-500" />
+                                <div>
+                                  <p className="text-sm font-medium text-green-300">{stream.provider}</p>
+                                  <code className="text-xs text-green-400 break-all">{stream.url?.slice(0, 100)}</code>
+                                </div>
+                              </div>
+                              <Button size="sm" className="bg-green-600 hover:bg-green-700" onClick={() => {
+                                const proxyUrl = stream.proxyUrl || `/api/proxy/m3u8?url=${encodeURIComponent(stream.url)}`;
+                                setPlayerSrc(proxyUrl);
+                                setPlayerTitle(`${selectedShow?.name} - Ep ${episodeNum} [${stream.provider}]`);
+                                setActiveTab('player');
+                              }}>
+                                <Play className="w-3 h-3 mr-1" /> Play
+                              </Button>
+                            </div>
+                          ))}
                         </div>
                       </CardContent>
                     </Card>
