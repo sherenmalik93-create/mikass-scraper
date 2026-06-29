@@ -63,13 +63,15 @@ export async function GET(req: NextRequest) {
       url: `/api/proxy/m3u8?url=${encodeURIComponent(s.url)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`,
     }));
 
+    const playlistUrl = sources.find((s) => s.quality.includes("direct"))?.url;
     const masterUrl = sources.find((s) => s.type === "master")?.url;
+    const bestUrl = playlistUrl || masterUrl;
 
     // If action=raw, also fetch the raw m3u8 playlist content
     let rawM3u8: string | null = null;
-    if (action === "raw" && masterUrl) {
+    if (action === "raw" && bestUrl) {
       try {
-        rawM3u8 = await fetchRawM3U8(masterUrl);
+        rawM3u8 = await fetchRawM3U8(bestUrl);
       } catch {
         rawM3u8 = null;
       }
@@ -88,10 +90,10 @@ export async function GET(req: NextRequest) {
         backdrop: response.data?.backdrop,
         sources,
         proxiedSources,
-        proxyUrl: masterUrl
-          ? `/api/proxy/m3u8?url=${encodeURIComponent(masterUrl)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`
+        proxyUrl: bestUrl
+          ? `/api/proxy/m3u8?url=${encodeURIComponent(bestUrl)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`
           : null,
-        masterUrl,
+        masterUrl: bestUrl,
         ...(rawM3u8 !== null ? { rawM3u8 } : {}),
       },
       { headers: CORS }

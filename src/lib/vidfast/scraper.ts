@@ -208,19 +208,30 @@ export async function fetchM3U8Streams(
   }
 
   // Parse stream URLs into labeled sources
+  // The /playlist/ URLs contain direct segments on a non-Cloudflare CDN
+  // so they're the most reliable for playback. The /pl/ master.m3u8 URLs
+  // have segments behind Cloudflare which 403's Node's fetch.
   const sources: M3U8StreamSource[] = response.data.stream_urls.map(
     (url, i) => {
       const isPlaylist = url.includes("/playlist/");
-      const isMaster = url.endsWith("/master.m3u8") || !isPlaylist;
-      return {
-        url,
-        quality: isMaster
-          ? i === 0
-            ? "auto"
-            : `${1080 - i * 360}p`
-          : "playlist",
-        type: isMaster ? "master" : "variant",
-      };
+      const isMaster = url.endsWith("/master.m3u8") || (!isPlaylist && !url.includes("/list.m3u8"));
+      let quality: string;
+      let type: "master" | "variant";
+
+      if (isPlaylist) {
+        // /playlist/ URLs contain direct segments — most reliable
+        quality = "auto (direct)";
+        type = "variant";
+      } else if (isMaster) {
+        // /pl/ master.m3u8 URLs — segments behind Cloudflare, may need curl proxy
+        quality = i === 0 ? "auto" : `${1080 - i * 360}p`;
+        type = "master";
+      } else {
+        quality = `${1080 - i * 360}p`;
+        type = "variant";
+      }
+
+      return { url, quality, type };
     }
   );
 
@@ -315,12 +326,15 @@ export async function scrapeVidfastM3U8(opts: {
       url: `/api/proxy/m3u8?url=${encodeURIComponent(s.url)}&referer=${encodeURIComponent(`https://${NEXTGEN_CDN_HOST}/`)}`,
     }));
 
-    // Step 4: Fetch raw m3u8 content from the first (master) stream
+    // Step 4: Fetch raw m3u8 content — prefer playlist URL (direct segments)
+    // over master URL (Cloudflare-blocked segments) for reliability
     let rawM3u8: string | null = null;
+    const playlistUrl = sources.find((s) => s.quality.includes("direct"))?.url;
     const masterUrl = sources.find((s) => s.type === "master")?.url;
-    if (includeRawPlaylist && masterUrl) {
+    const bestUrl = playlistUrl || masterUrl;
+    if (includeRawPlaylist && bestUrl) {
       try {
-        rawM3u8 = await fetchRawM3U8(masterUrl);
+        rawM3u8 = await fetchRawM3U8(bestUrl);
       } catch (err) {
         console.warn(
           "[vidfast] Raw m3u8 fetch failed:",
@@ -329,9 +343,9 @@ export async function scrapeVidfastM3U8(opts: {
       }
     }
 
-    // Build the proxy URL for the master playlist
-    const proxyM3u8Url = masterUrl
-      ? `/api/proxy/m3u8?url=${encodeURIComponent(masterUrl)}&referer=${encodeURIComponent(`https://${NEXTGEN_CDN_HOST}/`)}`
+    // Build the proxy URL — prefer playlist URL for playback
+    const proxyM3u8Url = bestUrl
+      ? `/api/proxy/m3u8?url=${encodeURIComponent(bestUrl)}&referer=${encodeURIComponent(`https://${NEXTGEN_CDN_HOST}/`)}`
       : null;
 
     return {

@@ -1,7 +1,7 @@
 /**
  * Streaming CORS proxy for upstream m3u8 / segment URLs.
  *
- * Design goals:
+ * Key features:
  *   1. STREAM, don't buffer. Pipe upstream bytes through a ReadableStream
  *      so we never hold a full segment in memory and bypass Vercel's
  *      4.5MB response body limit.
@@ -10,6 +10,8 @@
  *   4. Auto-pick the right Referer per upstream host so CDN doesn't 403 us.
  *   5. Rewrite every URI inside m3u8 playlists so the player keeps calling
  *      us instead of going direct.
+ *   6. Use curl for Cloudflare-protected hosts where Node's undici gets
+ *      403'd by TLS fingerprinting.
  *
  * Usage:
  *   GET /api/proxy/m3u8?url=<encoded>
@@ -19,6 +21,7 @@
  */
 
 import { NextRequest, NextResponse } from "next/server";
+import { spawn } from "node:child_process";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -31,6 +34,19 @@ export const maxDuration = 60;
 const BROWSER_UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+
+/**
+ * Hosts that Cloudflare protects with TLS fingerprinting — Node's undici
+ * (used by global fetch()) gets 403'd by these even with full browser headers.
+ * For these hosts we shell out to curl, which Cloudflare accepts.
+ */
+const CURL_REQUIRED_HOSTS: RegExp[] = [
+  /nextgenmarketinghub\.site$/i,
+  /nextgencloudfabric\.com$/i,
+  /vidapi\.cloud$/i,
+  /flixcloud\.cc$/i,
+  /slopnet\.site$/i,
+];
 
 /**
  * Per-host Referer table. When the upstream URL's host matches one of these,
@@ -49,6 +65,8 @@ const REFERER_BY_HOST: Array<{ match: RegExp; referer: string }> = [
   { match: /vidsrc\.cc$/i, referer: "https://vidsrc.cc/" },
   { match: /2embed\.cc$/i, referer: "https://2embed.cc/" },
   { match: /vidlink\./i, referer: "https://vidlink.to/" },
+  // --- VA Player segment CDN (disguised file extensions) ---
+  { match: /highperformancebrands\.website$/i, referer: "https://nextgencloudfabric.com/" },
 ];
 
 const CORS_HEADERS = {
@@ -75,7 +93,6 @@ function pickReferer(targetUrl: string, override?: string | null): string {
   for (const r of REFERER_BY_HOST) {
     if (r.match.test(host)) return r.referer;
   }
-  // Fall back to the upstream origin itself
   try {
     const u = new URL(targetUrl);
     return `${u.protocol}//${u.host}/`;
@@ -95,6 +112,108 @@ function buildUpstreamHeaders(target: string, referer: string, req: NextRequest)
   const range = req.headers.get("range");
   if (range) headers["Range"] = range;
   return headers;
+}
+
+/** Detect whether the target host requires curl (Cloudflare-protected). */
+function needsCurl(targetUrl: string): boolean {
+  let host = "";
+  try {
+    host = new URL(targetUrl).hostname;
+  } catch {
+    return false;
+  }
+  return CURL_REQUIRED_HOSTS.some((re) => re.test(host));
+}
+
+/** Build curl CLI header args. */
+function buildCurlHeaders(referer: string, range?: string | null): string[] {
+  const h: string[] = [
+    "-A", BROWSER_UA,
+    "-H", `Referer: ${referer}`,
+    "-H", `Origin: ${referer.replace(/\/$/, "")}`,
+    "-H", "Accept: */*",
+    "-H", "Accept-Language: en-US,en;q=0.9",
+    "-H", 'Sec-Ch-Ua: "Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "-H", "Sec-Ch-Ua-Mobile: ?0",
+    "-H", 'Sec-Ch-Ua-Platform: "Windows"',
+    "-H", "Sec-Fetch-Dest: empty",
+    "-H", "Sec-Fetch-Mode: cors",
+    "-H", "Sec-Fetch-Site: cross-site",
+  ];
+  if (range) h.push("-H", `Range: ${range}`);
+  return h;
+}
+
+/**
+ * Curl-backed streaming fetch — used when Cloudflare's TLS fingerprinting
+ * blocks Node's undici. Returns status, headers, and body (ReadableStream).
+ *
+ * We use child_process.spawn so curl's stdout streams straight into our
+ * ReadableStream — no buffering. This keeps memory flat regardless of
+ * segment size and avoids Vercel's 4.5MB body limit.
+ */
+async function curlFetch(
+  target: string,
+  referer: string,
+  range?: string | null
+): Promise<{
+  status: number;
+  headers: Map<string, string>;
+  body: ReadableStream<Uint8Array>;
+}> {
+  const args = [
+    "-sS",
+    ...buildCurlHeaders(referer, range),
+    "-D", "-",           // dump headers to stdout BEFORE the body
+    "--max-time", "55",  // stay under Next's maxDuration
+    target,
+  ];
+  const child = spawn("curl", args);
+
+  let headersDone = false;
+  let status = 200;
+  const headers = new Map<string, string>();
+
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      let buf = Buffer.alloc(0);
+      child.stdout.on("data", (chunk: Buffer) => {
+        if (headersDone) {
+          controller.enqueue(new Uint8Array(chunk));
+          return;
+        }
+        buf = Buffer.concat([buf, chunk]);
+        const headerEnd = buf.indexOf("\r\n\r\n");
+        if (headerEnd < 0) return;
+        const headerBlock = buf.slice(0, headerEnd).toString("utf-8");
+        const lines = headerBlock.split("\r\n");
+        for (const line of lines) {
+          if (line.startsWith("HTTP/")) {
+            const parts = line.split(" ");
+            status = parseInt(parts[1] || "200", 10) || 200;
+          } else if (line.includes(":")) {
+            const idx = line.indexOf(":");
+            const k = line.slice(0, idx).trim().toLowerCase();
+            const v = line.slice(idx + 1).trim();
+            if (k) headers.set(k, v);
+          }
+        }
+        headersDone = true;
+        const bodyStart = headerEnd + 4;
+        if (buf.length > bodyStart) {
+          controller.enqueue(new Uint8Array(buf.slice(bodyStart)));
+        }
+      });
+      child.stdout.on("end", () => controller.close());
+      child.stdout.on("error", (e) => controller.error(e));
+      child.on("error", (e) => controller.error(e));
+    },
+    cancel() {
+      child.kill("SIGTERM");
+    },
+  });
+
+  return { status, headers, body: stream };
 }
 
 /**
@@ -151,7 +270,7 @@ function rewritePlaylistUrls(
 }
 
 // ---------------------------------------------------------------------------
-// OPTIONS - CORS preflight
+// OPTIONS — CORS preflight
 // ---------------------------------------------------------------------------
 
 export async function OPTIONS() {
@@ -170,7 +289,7 @@ export async function HEAD(req: NextRequest) {
 }
 
 // ---------------------------------------------------------------------------
-// GET - main proxy
+// GET — main proxy
 // ---------------------------------------------------------------------------
 
 export async function GET(req: NextRequest) {
@@ -202,14 +321,25 @@ export async function GET(req: NextRequest) {
   }
 
   const referer = pickReferer(target, refererOverride);
+  const range = req.headers.get("range");
 
+  // For Cloudflare-protected hosts, Node's undici gets 403'd by TLS
+  // fingerprinting. Shell out to curl instead.
   let upstream: Response;
   try {
-    upstream = await fetch(target, {
-      headers: buildUpstreamHeaders(target, referer, req),
-      cache: "no-store",
-      redirect: "follow",
-    });
+    if (needsCurl(target)) {
+      const r = await curlFetch(target, referer, range);
+      upstream = new Response(r.body, {
+        status: r.status,
+        headers: Object.fromEntries(r.headers),
+      });
+    } else {
+      upstream = await fetch(target, {
+        headers: buildUpstreamHeaders(target, referer, req),
+        cache: "no-store",
+        redirect: "follow",
+      });
+    }
   } catch (err) {
     return NextResponse.json(
       {
@@ -220,6 +350,7 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // Pass upstream error through with our CORS headers.
   if (!upstream.ok && upstream.status !== 206) {
     return new NextResponse(upstream.body, {
       status: upstream.status,
@@ -257,7 +388,7 @@ export async function GET(req: NextRequest) {
         },
       });
     }
-    // False positive - fall through to binary
+    // False positive — fall through to binary
     return new NextResponse(body, {
       status: 200,
       headers: {
@@ -285,7 +416,9 @@ export async function GET(req: NextRequest) {
     });
   }
 
-  // --- Binary segment / MP4 / TS branch - STREAM IT THROUGH ---
+  // --- Binary segment / MP4 / TS branch — STREAM IT THROUGH ---
+  // Pipe upstream ReadableStream straight into the NextResponse body.
+  // Memory stays flat regardless of segment size.
   const passthroughHeaders: Record<string, string> = {
     ...CORS_HEADERS,
     "Content-Type":

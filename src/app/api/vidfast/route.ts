@@ -123,12 +123,14 @@ export async function GET(req: NextRequest) {
           season,
           episode
         );
+        const playlistUrl = sources.find((s) => s.quality.includes("direct"))?.url;
         const masterUrl = sources.find((s) => s.type === "master")?.url;
+        const bestUrl = playlistUrl || masterUrl;
         let rawM3u8: string | null = null;
-        if (masterUrl) {
+        if (bestUrl) {
           try {
             const { fetchRawM3U8 } = await import("@/lib/vidfast/scraper");
-            rawM3u8 = await fetchRawM3U8(masterUrl);
+            rawM3u8 = await fetchRawM3U8(bestUrl);
           } catch {
             rawM3u8 = null;
           }
@@ -139,11 +141,11 @@ export async function GET(req: NextRequest) {
             tmdbId,
             kind,
             source,
-            masterUrl,
+            masterUrl: bestUrl,
             allUrls: sources.map((s) => s.url),
             rawM3u8,
-            proxyUrl: masterUrl
-              ? `/api/proxy/m3u8?url=${encodeURIComponent(masterUrl)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`
+            proxyUrl: bestUrl
+              ? `/api/proxy/m3u8?url=${encodeURIComponent(bestUrl)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`
               : null,
           },
           { headers: CORS }
