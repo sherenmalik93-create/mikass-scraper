@@ -1,1282 +1,842 @@
-"use client";
+'use client';
 
-import { useState, useCallback, useEffect, useRef } from "react";
-import Hls from "hls.js";
+import { useState, useRef, useEffect } from 'react';
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
+import { ScrollArea } from '@/components/ui/scroll-area';
 import {
-  Search,
-  Play,
-  Copy,
-  Check,
-  Loader2,
-  Film,
-  Tv,
-  Server,
-  Code2,
-  ChevronDown,
-  ChevronUp,
-  ExternalLink,
-  Zap,
-  Link2,
-  BookOpen,
-  Terminal,
-  Globe,
-  MonitorPlay,
-  X,
-  Maximize2,
-  Minimize2,
-  Volume2,
-  VolumeX,
-} from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
+  Search, Play, ExternalLink, Tv, Film, Globe,
+  Volume2, VolumeX, Maximize, Pause, RefreshCw,
+  Download, Zap, Server, Info, Shield, Lock, Unlock, Copy, Check
+} from 'lucide-react';
 
-/* ------------------------------------------------------------------ */
-/*  Types                                                              */
-/* ------------------------------------------------------------------ */
+// Types
+interface AnimeShow {
+  _id: string;
+  name: string;
+  thumbnail: string;
+  englishName?: string;
+  nativeName?: string;
+  score?: number;
+  status?: string;
+  season?: { quarter: string; year: number };
+  genres?: string[];
+  type?: string;
+  episodeCount?: number;
+}
 
-interface StreamSource {
+interface StreamInfo {
+  provider: string;
   url: string;
-  quality: string;
-  type: "master" | "variant";
+  type: 'm3u8' | 'mp4' | 'iframe' | 'clock';
+  quality?: string;
+  originalUrl: string;
+  proxyUrl?: string;
 }
 
-interface ScrapeResult {
-  success: boolean;
-  meta?: {
-    tmdbId: string;
-    title: string;
-    year: string;
-    backdrop: string;
-    enToken: string;
-    host: string;
-  } | null;
-  sources?: StreamSource[];
-  proxiedSources?: StreamSource[];
-  rawM3u8?: string | null;
-  proxyM3u8Url?: string | null;
-  error?: string;
-  title?: string;
-  imdbId?: string;
-  fileName?: string;
-}
-
-interface MultiSourceResult {
-  source: string;
-  success: boolean;
-  sources: StreamSource[];
-  proxiedSources: StreamSource[];
-  rawM3u8?: string | null;
-  error?: string;
-}
-
-type ActionType = "scrape" | "streams" | "raw" | "multi";
-type KindType = "movie" | "tv";
-type SourceType = "auto" | "justhd" | "vidsrc" | "vidfast";
-type TabType = "scraper" | "vidlink" | "test" | "docs";
-
-/* ------------------------------------------------------------------ */
-/*  HLS Player Component                                               */
-/* ------------------------------------------------------------------ */
-
-function HlsPlayer({
-  url,
-  title,
-  onClose,
-}: {
-  url: string;
-  title?: string;
-  onClose: () => void;
-}) {
+// ========== HLS Player Component ==========
+function HlsPlayer({ src, title }: { src: string; title?: string }) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const hlsRef = useRef<Hls | null>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
+  const hlsRef = useRef<any>(null);
   const [playing, setPlaying] = useState(false);
   const [muted, setMuted] = useState(false);
-  const [fullscreen, setFullscreen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [currentTime, setCurrentTime] = useState("0:00");
-  const [duration, setDuration] = useState("0:00");
+  const [error, setError] = useState<string | null>(null);
+  const [levels, setLevels] = useState<{ height: number }[]>([]);
+  const [currentLevel, setCurrentLevel] = useState(-1);
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !url) return;
+    if (!src || !videoRef.current) return;
 
-    // Destroy previous instance
-    if (hlsRef.current) {
-      hlsRef.current.destroy();
-      hlsRef.current = null;
-    }
-
-    setLoading(true);
-    setError(null);
-
-    if (Hls.isSupported()) {
-      const hls = new Hls({
-        enableWorker: true,
-        lowLatencyMode: false,
-        xhrSetup: (xhr) => {
-          xhr.withCredentials = false;
-        },
-      });
-      hlsRef.current = hls;
-
-      hls.loadSource(url);
-      hls.attachMedia(video);
-
-      hls.on(Hls.Events.MANIFEST_PARSED, () => {
-        setLoading(false);
-        video.play().then(() => setPlaying(true)).catch(() => {});
-      });
-
-      hls.on(Hls.Events.ERROR, (_event, data) => {
-        if (data.fatal) {
-          setLoading(false);
-          switch (data.type) {
-            case Hls.ErrorTypes.NETWORK_ERROR:
-              setError(`Network error: ${data.details}. The stream might be geo-blocked or the URL expired.`);
-              hls.startLoad();
-              break;
-            case Hls.ErrorTypes.MEDIA_ERROR:
-              setError(`Media error: ${data.details}. Trying to recover...`);
-              hls.recoverMediaError();
-              break;
-            default:
-              setError(`Fatal error: ${data.details}`);
-              hls.destroy();
-              break;
-          }
-        }
-      });
-    } else if (video.canPlayType("application/vnd.apple.mpegurl")) {
-      // Safari native HLS
-      video.src = url;
-      video.addEventListener("loadedmetadata", () => {
-        setLoading(false);
-        video.play().then(() => setPlaying(true)).catch(() => {});
-      });
-    } else {
-      setError("HLS is not supported in this browser.");
-      setLoading(false);
-    }
-
-    return () => {
+    const initPlayer = async () => {
       if (hlsRef.current) {
         hlsRef.current.destroy();
         hlsRef.current = null;
       }
+
+      const video = videoRef.current;
+      setLoading(true);
+      setError(null);
+
+      if (src.includes('.m3u8')) {
+        const Hls = (await import('hls.js')).default;
+
+        if (Hls.isSupported()) {
+          const hls = new Hls({
+            maxBufferLength: 30,
+            maxMaxBufferLength: 60,
+          });
+
+          hls.loadSource(src);
+          hls.attachMedia(video);
+
+          hls.on(Hls.Events.MANIFEST_PARSED, (_e: any, data: any) => {
+            setLoading(false);
+            setLevels(data.levels?.map((l: any) => ({ height: l.height })) || []);
+            video.play().catch(() => {});
+          });
+
+          hls.on(Hls.Events.LEVEL_SWITCHED, (_e: any, data: any) => {
+            setCurrentLevel(data.level);
+          });
+
+          hls.on(Hls.Events.ERROR, (_e: any, data: any) => {
+            if (data.fatal) {
+              setError(`${data.type}: ${data.details}`);
+              if (data.type === Hls.ErrorTypes.NETWORK_ERROR) hls.startLoad();
+              else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) hls.recoverMediaError();
+              else hls.destroy();
+            }
+          });
+
+          hlsRef.current = hls;
+        } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+          video.src = src;
+          video.addEventListener('loadedmetadata', () => { setLoading(false); video.play().catch(() => {}); });
+        }
+      } else {
+        video.src = src;
+        video.addEventListener('loadeddata', () => { setLoading(false); video.play().catch(() => {}); });
+        video.addEventListener('error', () => { setError('Failed to load video'); setLoading(false); });
+      }
     };
-  }, [url]);
+
+    initPlayer();
+    return () => { if (hlsRef.current) { hlsRef.current.destroy(); hlsRef.current = null; } };
+  }, [src]);
 
   const togglePlay = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (video.paused) {
-      video.play().then(() => setPlaying(true)).catch(() => {});
-    } else {
-      video.pause();
-      setPlaying(false);
-    }
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) { v.play().catch(() => {}); setPlaying(true); } else { v.pause(); setPlaying(false); }
   };
 
   const toggleMute = () => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = !video.muted;
-    setMuted(video.muted);
+    const v = videoRef.current;
+    if (!v) return;
+    v.muted = !v.muted;
+    setMuted(v.muted);
   };
 
   const toggleFullscreen = () => {
-    const container = containerRef.current;
-    if (!container) return;
-    if (!document.fullscreenElement) {
-      container.requestFullscreen().then(() => setFullscreen(true)).catch(() => {});
-    } else {
-      document.exitFullscreen().then(() => setFullscreen(false)).catch(() => {});
-    }
+    const v = videoRef.current;
+    if (!v) return;
+    if (document.fullscreenElement) { document.exitFullscreen(); } else { v.requestFullscreen(); }
   };
 
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    const onTime = () => setCurrentTime(formatTime(video.currentTime));
-    const onDur = () => setDuration(formatTime(video.duration));
-    const onPlay = () => setPlaying(true);
-    const onPause = () => setPlaying(false);
-    video.addEventListener("timeupdate", onTime);
-    video.addEventListener("durationchange", onDur);
-    video.addEventListener("play", onPlay);
-    video.addEventListener("pause", onPause);
-    return () => {
-      video.removeEventListener("timeupdate", onTime);
-      video.removeEventListener("durationchange", onDur);
-      video.removeEventListener("play", onPlay);
-      video.removeEventListener("pause", onPause);
-    };
-  }, []);
+  const seek = (e: React.MouseEvent<HTMLDivElement>) => {
+    const v = videoRef.current;
+    if (!v || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    v.currentTime = ((e.clientX - rect.left) / rect.width) * duration;
+  };
+
+  const formatTime = (s: number) => {
+    if (!s || isNaN(s)) return '0:00';
+    const m = Math.floor(s / 60);
+    return `${m}:${Math.floor(s % 60).toString().padStart(2, '0')}`;
+  };
 
   return (
-    <div
-      ref={containerRef}
-      className="bg-black rounded-xl overflow-hidden border border-zinc-700 relative group"
-    >
-      {/* Close button */}
-      <button
-        onClick={onClose}
-        className="absolute top-2 right-2 z-20 p-1.5 rounded-full bg-black/60 hover:bg-black/80 transition-colors"
-        title="Close player"
-      >
-        <X className="w-4 h-4 text-white" />
-      </button>
-
-      {/* Title bar */}
+    <div className="relative bg-black rounded-lg overflow-hidden">
       {title && (
-        <div className="absolute top-2 left-2 z-20 bg-black/60 rounded-lg px-2 py-1">
-          <p className="text-xs text-white font-medium truncate max-w-[300px]">{title}</p>
+        <div className="absolute top-0 left-0 right-0 z-10 bg-gradient-to-b from-black/80 to-transparent p-3">
+          <p className="text-white text-sm font-medium truncate">{title}</p>
         </div>
       )}
 
-      {/* Video element */}
       <video
         ref={videoRef}
-        className="w-full aspect-video bg-black cursor-pointer"
+        className="w-full aspect-video"
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onTimeUpdate={() => videoRef.current && setCurrentTime(videoRef.current.currentTime)}
+        onDurationChange={() => videoRef.current && setDuration(videoRef.current.duration)}
         onClick={togglePlay}
         playsInline
       />
 
-      {/* Loading overlay */}
       {loading && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10">
-          <div className="text-center">
-            <Loader2 className="w-8 h-8 text-yellow-400 animate-spin mx-auto" />
-            <p className="text-sm text-zinc-300 mt-2">Loading stream...</p>
-          </div>
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white" />
         </div>
       )}
 
-      {/* Error overlay */}
       {error && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
-          <div className="text-center max-w-md px-4">
-            <div className="w-12 h-12 rounded-full bg-red-500/20 flex items-center justify-center mx-auto mb-3">
-              <X className="w-6 h-6 text-red-400" />
-            </div>
-            <p className="text-red-400 font-semibold mb-1">Playback Error</p>
-            <p className="text-xs text-zinc-400">{error}</p>
-            <p className="text-[10px] text-zinc-500 mt-2">Try using the proxied URL or a different source.</p>
+        <div className="absolute inset-0 flex items-center justify-center bg-black/80">
+          <div className="text-center p-4">
+            <p className="text-red-400 text-sm mb-2">{error}</p>
+            <Button size="sm" variant="outline" onClick={() => { setError(null); setLoading(true); hlsRef.current?.startLoad(); }}>
+              <RefreshCw className="w-3 h-3 mr-1" /> Retry
+            </Button>
           </div>
         </div>
       )}
 
-      {/* Controls bar */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 to-transparent px-4 py-3 z-10 opacity-0 group-hover:opacity-100 transition-opacity">
+      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 to-transparent p-3 pt-8">
+        <div className="w-full h-1.5 bg-white/20 rounded cursor-pointer mb-2" onClick={seek}>
+          <div className="h-full bg-red-500 rounded transition-all" style={{ width: duration ? `${(currentTime / duration) * 100}%` : '0%' }} />
+        </div>
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button onClick={togglePlay} className="p-1 hover:scale-110 transition-transform">
-              {playing ? (
-                <svg className="w-5 h-5 text-white" fill="white" viewBox="0 0 24 24"><rect x="6" y="4" width="4" height="16" /><rect x="14" y="4" width="4" height="16" /></svg>
-              ) : (
-                <svg className="w-5 h-5 text-white" fill="white" viewBox="0 0 24 24"><polygon points="5,3 19,12 5,21" /></svg>
-              )}
+          <div className="flex items-center gap-2">
+            <button onClick={togglePlay} className="text-white hover:text-red-400 transition">
+              {playing ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5" />}
             </button>
-            <button onClick={toggleMute} className="p-1 hover:scale-110 transition-transform">
-              {muted ? <VolumeX className="w-4 h-4 text-white" /> : <Volume2 className="w-4 h-4 text-white" />}
+            <button onClick={toggleMute} className="text-white hover:text-red-400 transition">
+              {muted ? <VolumeX className="w-5 h-5" /> : <Volume2 className="w-5 h-5" />}
             </button>
-            <span className="text-xs text-zinc-300 font-mono">
-              {currentTime} / {duration}
-            </span>
+            <span className="text-white/70 text-xs">{formatTime(currentTime)} / {formatTime(duration)}</span>
           </div>
-          <button onClick={toggleFullscreen} className="p-1 hover:scale-110 transition-transform">
-            {fullscreen ? <Minimize2 className="w-4 h-4 text-white" /> : <Maximize2 className="w-4 h-4 text-white" />}
-          </button>
+          <div className="flex items-center gap-2">
+            {levels.length > 0 && (
+              <span className="text-white/50 text-xs">
+                {currentLevel >= 0 ? `${levels[currentLevel]?.height}p` : 'Auto'}
+              </span>
+            )}
+            <button onClick={toggleFullscreen} className="text-white hover:text-red-400 transition">
+              <Maximize className="w-5 h-5" />
+            </button>
+          </div>
         </div>
       </div>
     </div>
   );
 }
 
-function formatTime(s: number): string {
-  if (!s || !isFinite(s)) return "0:00";
-  const m = Math.floor(s / 60);
-  const sec = Math.floor(s % 60);
-  return `${m}:${sec.toString().padStart(2, "0")}`;
+// ========== Copy Button ==========
+function CopyBtn({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    navigator.clipboard.writeText(text).then(() => { setCopied(true); setTimeout(() => setCopied(false), 2000); });
+  };
+  return (
+    <button onClick={copy} className="text-gray-500 hover:text-gray-300 transition">
+      {copied ? <Check className="w-4 h-4 text-green-400" /> : <Copy className="w-4 h-4" />}
+    </button>
+  );
 }
 
-/* ------------------------------------------------------------------ */
-/*  Main Component                                                     */
-/* ------------------------------------------------------------------ */
-
-export default function VidfastPage() {
-  const [tab, setTab] = useState<TabType>("scraper");
-  const [tmdbId, setTmdbId] = useState("1265609");
-  const [kind, setKind] = useState<KindType>("movie");
-  const [season, setSeason] = useState("1");
-  const [episode, setEpisode] = useState("1");
-  const [action, setAction] = useState<ActionType>("scrape");
-  const [source, setSource] = useState<SourceType>("auto");
+// ========== Main Page ==========
+export default function MkissaScraperPage() {
+  const [activeTab, setActiveTab] = useState('search');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<AnimeShow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<ScrapeResult | null>(null);
-  const [multiResults, setMultiResults] = useState<MultiSourceResult[] | null>(null);
-  const [copied, setCopied] = useState<string | null>(null);
-  const [showRaw, setShowRaw] = useState(false);
-  const [activeProvider, setActiveProvider] = useState<"vidfast" | "vidlink">("vidfast");
+  const [error, setError] = useState<string | null>(null);
 
-  // Player state
-  const [playerUrl, setPlayerUrl] = useState<string | null>(null);
-  const [playerTitle, setPlayerTitle] = useState<string>("");
+  const [selectedShow, setSelectedShow] = useState<AnimeShow | null>(null);
+  const [showDetail, setShowDetail] = useState<any>(null);
 
-  const playStream = (url: string, title?: string) => {
-    // If the URL is relative (proxied), use as-is. If absolute, wrap through proxy.
-    let playUrl = url;
-    if (url.startsWith("http")) {
-      // Direct URL — route through our CORS proxy
-      playUrl = `/api/proxy/m3u8?url=${encodeURIComponent(url)}&referer=${encodeURIComponent("https://nextgenmarketinghub.site/")}`;
-    }
-    setPlayerUrl(playUrl);
-    setPlayerTitle(title || "");
-  };
+  const [episodeNum, setEpisodeNum] = useState('1');
+  const [translationType, setTranslationType] = useState<'sub' | 'dub'>('sub');
+  const [streams, setStreams] = useState<StreamInfo[]>([]);
+  const [episodeData, setEpisodeData] = useState<any>(null);
 
-  const closePlayer = () => {
-    setPlayerUrl(null);
-    setPlayerTitle("");
-  };
+  const [playerSrc, setPlayerSrc] = useState<string | null>(null);
+  const [playerTitle, setPlayerTitle] = useState<string>('');
 
-  const scrape = useCallback(async () => {
+  const [testUrl, setTestUrl] = useState('');
+
+  const handleSearch = async (query?: string) => {
+    const q = query || searchQuery;
+    if (!q.trim()) return;
     setLoading(true);
-    setResult(null);
-    setMultiResults(null);
-    setShowRaw(false);
-
+    setError(null);
+    setSearchQuery(q);
     try {
-      const params = new URLSearchParams({
-        tmdb: tmdbId,
-        kind,
-        action,
-        ...(source !== "auto" ? { source } : {}),
-      });
-      if (kind === "tv") {
-        params.set("season", season);
-        params.set("episode", episode);
-      }
-
-      const apiRoute = activeProvider === "vidlink" ? "/api/vidlink" : "/api/vidfast";
-      const res = await fetch(`${apiRoute}?${params}`);
+      const res = await fetch(`/api/mkissa/search?q=${encodeURIComponent(q)}&limit=25`);
       const data = await res.json();
-
-      if (action === "multi" && data.results) {
-        setMultiResults(data.results);
-      } else {
-        setResult(data);
-      }
-    } catch (err) {
-      setResult({
-        success: false,
-        error: err instanceof Error ? err.message : "Fetch failed",
-      });
-    } finally {
-      setLoading(false);
-    }
-  }, [tmdbId, kind, season, episode, action, source, activeProvider]);
-
-  const copyToClipboard = (text: string, id: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(id);
-    setTimeout(() => setCopied(null), 2000);
+      if (data.success) setSearchResults(data.shows || []);
+      else setError(data.error || 'Search failed');
+    } catch (err: any) { setError(err.message); }
+    setLoading(false);
   };
 
-  const CopyBtn = ({ text, id }: { text: string; id: string }) => (
-    <button
-      onClick={() => copyToClipboard(text, id)}
-      className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors"
-      title="Copy"
-    >
-      {copied === id ? (
-        <Check className="w-3 h-3 text-green-400" />
-      ) : (
-        <Copy className="w-3 h-3 text-zinc-400" />
-      )}
-    </button>
-  );
+  const loadBrowse = async (sort: string) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/mkissa/search?sort=${sort}&limit=25`);
+      const data = await res.json();
+      if (data.success) setSearchResults(data.shows || []);
+    } catch (err: any) { setError(err.message); }
+    setLoading(false);
+  };
 
-  const PlayBtn = ({ url, title, color = "green" }: { url: string; title?: string; color?: string }) => (
-    <button
-      onClick={() => playStream(url, title)}
-      className={cn(
-        "p-1.5 rounded-md transition-colors",
-        color === "green" ? "bg-green-500/20 hover:bg-green-500/30" : color === "yellow" ? "bg-yellow-500/20 hover:bg-yellow-500/30" : "bg-blue-500/20 hover:bg-blue-500/30"
-      )}
-      title="Play stream"
-    >
-      <MonitorPlay className={cn("w-3 h-3", color === "green" ? "text-green-400" : color === "yellow" ? "text-yellow-400" : "text-blue-400")} />
-    </button>
-  );
+  const selectShow = async (show: AnimeShow) => {
+    setSelectedShow(show);
+    setLoading(true);
+    try {
+      const res = await fetch(`/api/mkissa/show?id=${show._id}`);
+      const data = await res.json();
+      if (data.success) { setShowDetail(data.show); setActiveTab('detail'); }
+      else setError(data.error || 'Failed to load show');
+    } catch (err: any) { setError(err.message); }
+    setLoading(false);
+  };
+
+  const loadEpisode = async () => {
+    if (!selectedShow?._id || !episodeNum) return;
+    setLoading(true);
+    setError(null);
+    setStreams([]);
+    setEpisodeData(null);
+    try {
+      const res = await fetch(`/api/mkissa/streams?showId=${selectedShow._id}&episode=${episodeNum}&type=${translationType}`);
+      const data = await res.json();
+      if (data.success) { setEpisodeData(data); setStreams(data.streams || []); }
+      else setError(data.error || 'Failed to load episode');
+    } catch (err: any) { setError(err.message); }
+    setLoading(false);
+  };
+
+  const playStream = (stream: StreamInfo) => {
+    if (stream.type === 'm3u8' || stream.type === 'mp4') {
+      const proxyUrl = stream.proxyUrl || `/api/proxy/m3u8?url=${encodeURIComponent(stream.url)}`;
+      setPlayerSrc(proxyUrl);
+      setPlayerTitle(`${selectedShow?.name || 'Unknown'} - Ep ${episodeNum} [${stream.provider}]`);
+      setActiveTab('player');
+    }
+  };
+
+  const playDirectUrl = () => {
+    if (!testUrl.trim()) return;
+    const proxyUrl = testUrl.includes('/api/proxy/') ? testUrl : `/api/proxy/m3u8?url=${encodeURIComponent(testUrl.trim())}`;
+    setPlayerSrc(proxyUrl);
+    setPlayerTitle('Direct URL Test');
+    setActiveTab('player');
+  };
+
+  // Load popular on mount
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/mkissa/search?sort=Popular&limit=25`);
+        const data = await res.json();
+        if (!cancelled && data.success) setSearchResults(data.shows || []);
+      } catch {}
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const typeIcon = (type: string) => {
+    switch (type) {
+      case 'clock': return <Lock className="w-4 h-4 text-yellow-500" />;
+      case 'iframe': return <ExternalLink className="w-4 h-4 text-blue-400" />;
+      case 'm3u8': return <Play className="w-4 h-4 text-green-500" />;
+      case 'mp4': return <Film className="w-4 h-4 text-purple-400" />;
+      default: return <Server className="w-4 h-4 text-gray-400" />;
+    }
+  };
+
+  const typeColor = (type: string) => {
+    switch (type) {
+      case 'clock': return 'border-yellow-700 bg-yellow-950/30';
+      case 'iframe': return 'border-blue-700 bg-blue-950/30';
+      case 'm3u8': return 'border-green-700 bg-green-950/30';
+      case 'mp4': return 'border-purple-700 bg-purple-950/30';
+      default: return 'border-gray-700 bg-gray-900/50';
+    }
+  };
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
+    <div className="min-h-screen bg-gradient-to-br from-gray-950 via-gray-900 to-gray-950 text-white">
       {/* Header */}
-      <div className="border-b border-zinc-800 bg-zinc-900/80 backdrop-blur-md sticky top-0 z-50">
+      <header className="border-b border-gray-800 bg-gray-950/80 backdrop-blur-sm sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-yellow-400 to-orange-500 flex items-center justify-center">
-              <Zap className="w-5 h-5 text-black" />
+            <div className="bg-red-600 rounded-lg p-2">
+              <Tv className="w-5 h-5 text-white" />
             </div>
             <div>
-              <h1 className="text-lg font-bold bg-gradient-to-r from-yellow-400 to-orange-500 bg-clip-text text-transparent">
-                Vidfast Scraper
-              </h1>
-              <p className="text-[10px] text-zinc-500 -mt-0.5">Raw m3u8 + CORS Proxy + Vidlink</p>
+              <h1 className="text-lg font-bold">Mkissa Scraper</h1>
+              <p className="text-xs text-gray-400">mkissa.to anime stream extractor</p>
             </div>
           </div>
-          <div className="flex gap-1">
-            {([
-              { id: "scraper" as TabType, icon: Zap, label: "Scraper" },
-              { id: "vidlink" as TabType, icon: Link2, label: "Vidlink" },
-              { id: "test" as TabType, icon: Terminal, label: "Test Lab" },
-              { id: "docs" as TabType, icon: BookOpen, label: "API Docs" },
-            ]).map((t) => (
-              <button
-                key={t.id}
-                onClick={() => setTab(t.id)}
-                className={cn(
-                  "flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all",
-                  tab === t.id
-                    ? "bg-yellow-500/15 text-yellow-400 border border-yellow-500/30"
-                    : "text-zinc-500 hover:text-zinc-300 hover:bg-zinc-800"
-                )}
-              >
-                <t.icon className="w-3.5 h-3.5" />
-                {t.label}
-              </button>
-            ))}
+          <div className="flex items-center gap-2">
+            <Badge variant="outline" className="text-green-400 border-green-800">
+              <Zap className="w-3 h-3 mr-1" /> API Online
+            </Badge>
           </div>
         </div>
-      </div>
+      </header>
 
-      <div className="max-w-7xl mx-auto px-4 py-6">
-        {/* ==================== PLAYER (floating) ==================== */}
-        {playerUrl && (
-          <div className="mb-6">
-            <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-2">
-                <MonitorPlay className="w-4 h-4 text-green-400" />
-                <span className="text-sm font-semibold text-green-400">Now Playing</span>
-                {playerTitle && <span className="text-xs text-zinc-400">— {playerTitle}</span>}
-              </div>
-              <button onClick={closePlayer} className="text-xs text-zinc-500 hover:text-white transition-colors flex items-center gap-1">
-                <X className="w-3 h-3" /> Close
-              </button>
-            </div>
-            <HlsPlayer url={playerUrl} title={playerTitle} onClose={closePlayer} />
-          </div>
-        )}
+      <main className="max-w-7xl mx-auto px-4 py-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <TabsList className="bg-gray-800/50 border border-gray-700 mb-6">
+            <TabsTrigger value="search" className="data-[state=active]:bg-red-600">
+              <Search className="w-4 h-4 mr-1" /> Search
+            </TabsTrigger>
+            <TabsTrigger value="detail" className="data-[state=active]:bg-red-600">
+              <Film className="w-4 h-4 mr-1" /> Detail
+            </TabsTrigger>
+            <TabsTrigger value="player" className="data-[state=active]:bg-red-600">
+              <Play className="w-4 h-4 mr-1" /> Player
+            </TabsTrigger>
+            <TabsTrigger value="test" className="data-[state=active]:bg-red-600">
+              <Globe className="w-4 h-4 mr-1" /> Test Lab
+            </TabsTrigger>
+            <TabsTrigger value="docs" className="data-[state=active]:bg-red-600">
+              <Info className="w-4 h-4 mr-1" /> API Docs
+            </TabsTrigger>
+          </TabsList>
 
-        {/* ==================== SCRAPER TAB ==================== */}
-        {tab === "scraper" && (
-          <div className="space-y-6">
-            {/* Search Controls */}
-            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Film className="w-5 h-5 text-yellow-400" />
-                <h2 className="text-lg font-bold">Vidfast M3U8 Scraper</h2>
-                <Badge className="bg-yellow-500/15 text-yellow-400 border-yellow-500/30 text-[10px]">
-                  vidfast.pro
-                </Badge>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                <div className="md:col-span-2">
-                  <label className="text-xs text-zinc-400 mb-1 block">TMDB ID</label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={tmdbId}
-                      onChange={(e) => setTmdbId(e.target.value)}
-                      placeholder="e.g. 1265609"
-                      className="bg-zinc-800 border-zinc-700 text-white"
-                    />
-                    <Button
-                      onClick={scrape}
-                      disabled={loading || !tmdbId}
-                      className="bg-yellow-500 hover:bg-yellow-600 text-black font-semibold shrink-0"
-                    >
-                      {loading ? (
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                      ) : (
-                        <Search className="w-4 h-4" />
-                      )}
-                      {loading ? "Scraping..." : "Scrape"}
-                    </Button>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs text-zinc-400 mb-1 block">Type</label>
-                  <div className="flex gap-1">
-                    {(["movie", "tv"] as KindType[]).map((k) => (
-                      <button
-                        key={k}
-                        onClick={() => setKind(k)}
-                        className={cn(
-                          "flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-                          kind === k
-                            ? "bg-yellow-500/20 text-yellow-400 border border-yellow-500/30"
-                            : "bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700"
-                        )}
-                      >
-                        {k === "movie" ? (
-                          <span className="flex items-center gap-1">
-                            <Film className="w-3 h-3" /> Movie
-                          </span>
-                        ) : (
-                          <span className="flex items-center gap-1">
-                            <Tv className="w-3 h-3" /> TV
-                          </span>
-                        )}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div>
-                  <label className="text-xs text-zinc-400 mb-1 block">Source</label>
-                  <select
-                    value={source}
-                    onChange={(e) => setSource(e.target.value as SourceType)}
-                    className="w-full bg-zinc-800 border border-zinc-700 text-white rounded-lg px-3 py-2 text-sm"
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="justhd">JustHD</option>
-                    <option value="vidsrc">VidSrc</option>
-                    <option value="vidfast">Vidfast</option>
-                  </select>
-                </div>
+          {/* ===== SEARCH TAB ===== */}
+          <TabsContent value="search">
+            <div className="space-y-6">
+              <div className="flex gap-2">
+                <Input
+                  placeholder="Search anime... (e.g. Naruto, One Piece, Jujutsu Kaisen)"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
+                  className="bg-gray-800/50 border-gray-700 text-white placeholder-gray-500 flex-1"
+                />
+                <Button onClick={() => handleSearch()} disabled={loading} className="bg-red-600 hover:bg-red-700">
+                  <Search className="w-4 h-4 mr-1" /> Search
+                </Button>
+                <Button onClick={() => loadBrowse('Popular')} variant="outline" className="border-gray-700 text-gray-300">
+                  Popular
+                </Button>
+                <Button onClick={() => loadBrowse('Recent')} variant="outline" className="border-gray-700 text-gray-300">
+                  Latest
+                </Button>
               </div>
 
-              {kind === "tv" && (
-                <div className="flex gap-4">
-                  <div>
-                    <label className="text-xs text-zinc-400 mb-1 block">Season</label>
-                    <Input value={season} onChange={(e) => setSeason(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-400 mb-1 block">Episode</label>
-                    <Input value={episode} onChange={(e) => setEpisode(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
-                  </div>
-                </div>
+              {error && (
+                <Card className="bg-red-950/50 border-red-800">
+                  <CardContent className="p-4"><p className="text-red-300 text-sm">{error}</p></CardContent>
+                </Card>
               )}
 
-              <div className="flex flex-wrap gap-2">
-                {([
-                  { a: "scrape" as ActionType, label: "Full Scrape" },
-                  { a: "streams" as ActionType, label: "Streams Only" },
-                  { a: "raw" as ActionType, label: "Raw M3U8" },
-                  { a: "multi" as ActionType, label: "All Sources" },
-                ]).map((item) => (
-                  <button
-                    key={item.a}
-                    onClick={() => setAction(item.a)}
-                    className={cn(
-                      "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
-                      action === item.a
-                        ? "bg-yellow-500 text-black"
-                        : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-                    )}
-                  >
-                    {item.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Error */}
-            {result && !result.success && result.error && (
-              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
-                <p className="font-semibold">Error</p>
-                <p className="text-sm mt-1">{result.error}</p>
-              </div>
-            )}
-
-            {/* Metadata Card */}
-            {result?.success && (result.meta || result.title) && (
-              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
-                <h2 className="text-lg font-bold mb-3 flex items-center gap-2">
-                  <Film className="w-5 h-5 text-yellow-400" />
-                  {result.meta?.title || result.title || "Unknown"}
-                  {result.meta?.year && (
-                    <span className="text-zinc-500 text-sm">({result.meta.year})</span>
-                  )}
-                </h2>
-                {result.meta?.backdrop && (
-                  <div className="mb-3 rounded-lg overflow-hidden h-32 bg-zinc-800">
-                    <img
-                      src={result.meta.backdrop}
-                      alt="backdrop"
-                      className="w-full h-full object-cover opacity-70"
-                      onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                    />
-                  </div>
-                )}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
-                  {result.meta?.enToken && (
-                    <div>
-                      <span className="text-zinc-500">EN Token</span>
-                      <p className="text-yellow-400 font-mono text-xs truncate">
-                        {result.meta.enToken.substring(0, 30)}...
-                      </p>
-                    </div>
-                  )}
-                  {result.meta?.host && (
-                    <div>
-                      <span className="text-zinc-500">Host</span>
-                      <p className="text-white">{result.meta.host}</p>
-                    </div>
-                  )}
-                  {result.imdbId && (
-                    <div>
-                      <span className="text-zinc-500">IMDB</span>
-                      <p className="text-white">{result.imdbId}</p>
-                    </div>
-                  )}
-                  {result.fileName && (
-                    <div className="col-span-2 md:col-span-4">
-                      <span className="text-zinc-500">File</span>
-                      <p className="text-zinc-300 font-mono text-xs truncate">
-                        {result.fileName}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Stream Sources */}
-            {result?.success && (result.sources?.length ?? 0) > 0 && (
-              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
-                <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-                  <Server className="w-5 h-5 text-green-400" />
-                  m3u8 Stream URLs
-                  <Badge className="bg-green-500/20 text-green-400 border-green-500/30">
-                    {result.sources?.length} streams
-                  </Badge>
-                </h2>
-                <div className="space-y-3">
-                  {result.sources?.map((s, i) => (
-                    <div key={i} className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Badge className={s.type === "master" ? "bg-yellow-500/20 text-yellow-400 border-yellow-500/30" : "bg-blue-500/20 text-blue-400 border-blue-500/30"}>
-                            {s.type}
-                          </Badge>
-                          <span className="text-sm text-zinc-300">{s.quality}</span>
-                        </div>
-                        <div className="flex gap-1">
-                          <PlayBtn url={s.url} title={result.meta?.title || result.title} color="green" />
-                          <CopyBtn text={s.url} id={`src-${i}`} />
-                          <a
-                            href={s.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors"
-                            title="Open"
-                          >
-                            <ExternalLink className="w-3 h-3 text-zinc-400" />
-                          </a>
-                        </div>
-                      </div>
-                      <p className="text-xs font-mono text-zinc-500 break-all">{s.url}</p>
+              {loading ? (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                  {Array.from({ length: 10 }).map((_, i) => (
+                    <div key={i} className="space-y-2">
+                      <Skeleton className="aspect-[3/4] rounded-lg bg-gray-800" />
+                      <Skeleton className="h-4 w-3/4 bg-gray-800" />
                     </div>
                   ))}
                 </div>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4">
+                  {searchResults.map((show) => (
+                    <Card
+                      key={show._id}
+                      className="bg-gray-800/50 border-gray-700 hover:border-red-600 transition cursor-pointer group"
+                      onClick={() => selectShow(show)}
+                    >
+                      <div className="relative aspect-[3/4] overflow-hidden rounded-t-lg">
+                        {show.thumbnail ? (
+                          <img
+                            src={show.thumbnail}
+                            alt={show.name}
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                          />
+                        ) : (
+                          <div className="w-full h-full bg-gray-700 flex items-center justify-center">
+                            <Film className="w-8 h-8 text-gray-500" />
+                          </div>
+                        )}
+                        <div className="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent" />
+                        {show.score && <Badge className="absolute top-2 right-2 bg-red-600 text-xs">{show.score.toFixed(1)}</Badge>}
+                        {show.type && <Badge variant="outline" className="absolute top-2 left-2 bg-black/50 text-xs border-gray-600">{show.type}</Badge>}
+                      </div>
+                      <CardContent className="p-2">
+                        <p className="text-sm font-medium truncate">{show.name}</p>
+                        {show.englishName && show.englishName !== show.name && (
+                          <p className="text-xs text-gray-400 truncate">{show.englishName}</p>
+                        )}
+                        <div className="flex items-center gap-1 mt-1">
+                          {show.episodeCount && <span className="text-xs text-gray-500">{show.episodeCount} eps</span>}
+                          {show.season && <span className="text-xs text-gray-500">· {show.season.quarter} {show.season.year}</span>}
+                        </div>
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              )}
 
-                {/* Proxied URLs */}
-                {result.proxiedSources && result.proxiedSources.length > 0 && (
-                  <div className="mt-6">
-                    <h3 className="text-md font-semibold mb-3 flex items-center gap-2">
-                      <Play className="w-4 h-4 text-blue-400" />
-                      Proxied URLs (CORS-ready)
-                    </h3>
-                    <div className="space-y-2">
-                      {result.proxiedSources.map((s, i) => (
-                        <div key={`proxy-${i}`} className="flex items-center gap-2 bg-zinc-800/50 rounded-lg px-3 py-2">
-                          <Badge variant="outline" className="text-blue-400 border-blue-500/30 text-xs shrink-0">
-                            {s.quality}
-                          </Badge>
-                          <p className="text-xs font-mono text-zinc-400 truncate flex-1">{s.url}</p>
-                          <PlayBtn url={s.url} title={result.meta?.title || result.title} color="blue" />
-                          <CopyBtn text={s.url} id={`proxy-${i}`} />
+              {!loading && searchResults.length === 0 && !error && (
+                <div className="text-center py-12 text-gray-500">
+                  <Tv className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                  <p>Search for anime or click Popular/Latest to browse</p>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+
+          {/* ===== DETAIL TAB ===== */}
+          <TabsContent value="detail">
+            {!selectedShow ? (
+              <div className="text-center py-12 text-gray-500">
+                <Film className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                <p>Select an anime from Search tab first</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Show Info */}
+                <div className="lg:col-span-1">
+                  <Card className="bg-gray-800/50 border-gray-700">
+                    <div className="aspect-[3/4] overflow-hidden rounded-t-lg">
+                      {selectedShow.thumbnail ? (
+                        <img src={selectedShow.thumbnail} alt={selectedShow.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <div className="w-full h-full bg-gray-700 flex items-center justify-center"><Film className="w-12 h-12 text-gray-500" /></div>
+                      )}
+                    </div>
+                    <CardContent className="p-4 space-y-3">
+                      <h2 className="text-lg font-bold">{selectedShow.name}</h2>
+                      {selectedShow.englishName && selectedShow.englishName !== selectedShow.name && (
+                        <p className="text-sm text-gray-400">{selectedShow.englishName}</p>
+                      )}
+                      <div className="flex flex-wrap gap-1">
+                        {showDetail?.genres?.map((g: string) => (
+                          <Badge key={g} variant="outline" className="text-xs border-gray-600">{g}</Badge>
+                        ))}
+                      </div>
+                      {showDetail?.score && <Badge className="bg-red-600">Score: {showDetail.score.toFixed(1)}</Badge>}
+                      {showDetail?.status && <p className="text-sm text-gray-400">Status: {showDetail.status}</p>}
+                      {showDetail?.description && (
+                        <p className="text-xs text-gray-400 line-clamp-8">
+                          {showDetail.description.replace(/<br\s*\/?>/gi, '\n').replace(/<[^>]*>/g, '')}
+                        </p>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+
+                {/* Episode Selection & Streams */}
+                <div className="lg:col-span-2 space-y-4">
+                  <Card className="bg-gray-800/50 border-gray-700">
+                    <CardHeader><CardTitle className="text-lg">Watch Episode</CardTitle></CardHeader>
+                    <CardContent className="space-y-4">
+                      <div className="flex gap-3 items-center flex-wrap">
+                        <div className="flex items-center gap-2">
+                          <label className="text-sm text-gray-400">Episode:</label>
+                          <Input type="number" min="1" value={episodeNum} onChange={(e) => setEpisodeNum(e.target.value)} className="w-20 bg-gray-900 border-gray-700 text-white" />
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <label className="text-sm text-gray-400">Type:</label>
+                          <div className="flex gap-1">
+                            <Button size="sm" variant={translationType === 'sub' ? 'default' : 'outline'} className={translationType === 'sub' ? 'bg-red-600' : 'border-gray-700'} onClick={() => setTranslationType('sub')}>Sub</Button>
+                            <Button size="sm" variant={translationType === 'dub' ? 'default' : 'outline'} className={translationType === 'dub' ? 'bg-red-600' : 'border-gray-700'} onClick={() => setTranslationType('dub')}>Dub</Button>
+                          </div>
+                        </div>
+                        <Button onClick={loadEpisode} disabled={loading} className="bg-red-600 hover:bg-red-700">
+                          <Play className="w-4 h-4 mr-1" /> Load Streams
+                        </Button>
+                      </div>
+
+                      {loading && (
+                        <div className="space-y-2">
+                          <Skeleton className="h-12 bg-gray-700" />
+                          <Skeleton className="h-12 bg-gray-700" />
+                          <Skeleton className="h-12 bg-gray-700" />
+                        </div>
+                      )}
+
+                      {error && (
+                        <Card className="bg-red-950/50 border-red-800">
+                          <CardContent className="p-3"><p className="text-red-300 text-sm">{error}</p></CardContent>
+                        </Card>
+                      )}
+                    </CardContent>
+                  </Card>
+
+                  {/* Stream Results */}
+                  {streams.length > 0 && (
+                    <Card className="bg-gray-800/50 border-gray-700">
+                      <CardHeader>
+                        <CardTitle className="text-lg flex items-center gap-2">
+                          <Zap className="w-5 h-5 text-red-500" /> Available Streams ({streams.length})
+                        </CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="space-y-3">
+                          {streams.map((stream, i) => (
+                            <div
+                              key={i}
+                              className={`flex items-center justify-between p-3 rounded-lg border ${typeColor(stream.type)} hover:brightness-110 transition`}
+                            >
+                              <div className="flex items-center gap-3 min-w-0 flex-1">
+                                {typeIcon(stream.type)}
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <p className="text-sm font-medium">{stream.provider}</p>
+                                    <Badge variant="outline" className="text-xs border-gray-600">
+                                      {stream.type === 'clock' ? 'CF Protected' : stream.type.toUpperCase()}
+                                    </Badge>
+                                    {stream.quality && <span className="text-xs text-gray-500">{stream.quality}</span>}
+                                  </div>
+                                  <div className="flex items-center gap-1 mt-1">
+                                    <code className="text-xs text-gray-400 truncate max-w-md">{stream.url}</code>
+                                    <CopyBtn text={stream.url} />
+                                  </div>
+                                </div>
+                              </div>
+                              <div className="flex items-center gap-2 ml-2 shrink-0">
+                                {(stream.type === 'm3u8' || stream.type === 'mp4') && (
+                                  <Button size="sm" className="bg-red-600 hover:bg-red-700" onClick={() => playStream(stream)}>
+                                    <Play className="w-3 h-3 mr-1" /> Play
+                                  </Button>
+                                )}
+                                {stream.type === 'iframe' && (
+                                  <a href={stream.url} target="_blank" rel="noopener noreferrer">
+                                    <Button size="sm" variant="outline" className="border-blue-600 text-blue-400">
+                                      <ExternalLink className="w-3 h-3 mr-1" /> Open
+                                    </Button>
+                                  </a>
+                                )}
+                                {stream.type === 'clock' && (
+                                  <a href={stream.url} target="_blank" rel="noopener noreferrer">
+                                    <Button size="sm" variant="outline" className="border-yellow-600 text-yellow-400">
+                                      <Shield className="w-3 h-3 mr-1" /> Try
+                                    </Button>
+                                  </a>
+                                )}
+                                <a href={stream.url} target="_blank" rel="noopener noreferrer" className="text-gray-500 hover:text-gray-300">
+                                  <Download className="w-4 h-4" />
+                                </a>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Info notice */}
+                        <div className="mt-4 p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                          <div className="flex items-start gap-2">
+                            <Shield className="w-4 h-4 text-yellow-500 mt-0.5 shrink-0" />
+                            <div className="text-xs text-gray-400 space-y-1">
+                              <p><strong className="text-yellow-400">CF Protected</strong> sources require Cloudflare bypass. Open in browser to solve the challenge.</p>
+                              <p><strong className="text-blue-400">Iframe</strong> sources are embed pages — open them in your browser to watch the stream.</p>
+                              <p><strong className="text-green-400">M3U8/MP4</strong> sources can be played directly through the built-in HLS player.</p>
+                            </div>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Raw Episode Data */}
+                  {episodeData?.rawSources?.length > 0 && (
+                    <Card className="bg-gray-800/50 border-gray-700">
+                      <CardHeader><CardTitle className="text-sm">Raw Decrypted Source URLs</CardTitle></CardHeader>
+                      <CardContent>
+                        <ScrollArea className="max-h-64">
+                          <div className="space-y-2">
+                            {episodeData.rawSources.map((src: any, i: number) => (
+                              <div key={i} className="text-xs bg-gray-900/50 p-2 rounded border border-gray-700">
+                                <div className="flex items-center justify-between mb-1">
+                                  <span className="font-medium text-gray-300">{src.sourceName}</span>
+                                  <div className="flex items-center gap-2">
+                                    <Badge variant="outline" className="text-xs border-gray-600">{src.type || src.stype}</Badge>
+                                    <Badge variant="outline" className="text-xs border-gray-600">Pri: {src.priority}</Badge>
+                                  </div>
+                                </div>
+                                <code className="text-green-400 break-all">{src.sourceUrl}</code>
+                              </div>
+                            ))}
+                          </div>
+                        </ScrollArea>
+                      </CardContent>
+                    </Card>
+                  )}
+
+                  {/* Episode Info */}
+                  {episodeData?.episodeInfo && (
+                    <Card className="bg-gray-800/50 border-gray-700">
+                      <CardHeader><CardTitle className="text-sm">Episode Info</CardTitle></CardHeader>
+                      <CardContent>
+                        {episodeData.episodeInfo.vidInforssub && (
+                          <div className="text-xs space-y-1 mb-2">
+                            <p className="font-medium text-gray-300">Sub:</p>
+                            <p>Resolution: {episodeData.episodeInfo.vidInforssub.vidResolution}p</p>
+                            <p>Duration: {Math.round(episodeData.episodeInfo.vidInforssub.vidDuration)}s</p>
+                            <p>Size: {(episodeData.episodeInfo.vidInforssub.vidSize / 1024 / 1024).toFixed(1)} MB</p>
+                            <code className="text-green-400">{episodeData.episodeInfo.vidInforssub.vidPath}</code>
+                          </div>
+                        )}
+                        {episodeData.episodeInfo.vidInforsdub && (
+                          <div className="text-xs space-y-1">
+                            <p className="font-medium text-gray-300">Dub:</p>
+                            <p>Resolution: {episodeData.episodeInfo.vidInforsdub.vidResolution}p</p>
+                            <code className="text-green-400">{episodeData.episodeInfo.vidInforsdub.vidPath}</code>
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  )}
+                </div>
+              </div>
+            )}
+          </TabsContent>
+
+          {/* ===== PLAYER TAB ===== */}
+          <TabsContent value="player">
+            <div className="space-y-4">
+              {playerSrc ? (
+                <>
+                  <HlsPlayer src={playerSrc} title={playerTitle} />
+                  <Card className="bg-gray-800/50 border-gray-700">
+                    <CardContent className="p-3">
+                      <p className="text-xs text-gray-400 mb-1">Stream URL (proxied):</p>
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs text-green-400 break-all flex-1">{playerSrc}</code>
+                        <CopyBtn text={playerSrc} />
+                      </div>
+                    </CardContent>
+                  </Card>
+                </>
+              ) : (
+                <div className="text-center py-20 text-gray-500">
+                  <Play className="w-16 h-16 mx-auto mb-4 opacity-30" />
+                  <p className="text-lg">No stream loaded</p>
+                  <p className="text-sm">Search for anime and load an episode to play</p>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+
+          {/* ===== TEST LAB TAB ===== */}
+          <TabsContent value="test">
+            <div className="space-y-6">
+              <Card className="bg-gray-800/50 border-gray-700">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <Globe className="w-5 h-5 text-red-500" /> Direct URL Test
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <p className="text-sm text-gray-400">Paste any m3u8 or mp4 URL to test playback through the CORS proxy</p>
+                  <div className="flex gap-2">
+                    <Input
+                      placeholder="https://example.com/stream.m3u8"
+                      value={testUrl}
+                      onChange={(e) => setTestUrl(e.target.value)}
+                      className="bg-gray-900 border-gray-700 text-white font-mono text-sm"
+                    />
+                    <Button onClick={playDirectUrl} className="bg-red-600 hover:bg-red-700">
+                      <Play className="w-4 h-4 mr-1" /> Play
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-gray-800/50 border-gray-700">
+                <CardHeader><CardTitle className="flex items-center gap-2"><Server className="w-5 h-5 text-red-500" /> Proxy Status</CardTitle></CardHeader>
+                <CardContent>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                      <p className="text-sm font-medium mb-1">M3U8/Media Proxy</p>
+                      <code className="text-xs text-green-400">/api/proxy/m3u8?url=</code>
+                      <p className="text-xs text-gray-500 mt-1">Rewrites playlists, streams segments</p>
+                    </div>
+                    <div className="p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                      <p className="text-sm font-medium mb-1">API Proxy</p>
+                      <code className="text-xs text-green-400">/api/proxy/api?...</code>
+                      <p className="text-xs text-gray-500 mt-1">Forwards to api.allanime.day</p>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="bg-gray-800/50 border-gray-700">
+                <CardHeader><CardTitle className="text-sm">Quick Test: API Connectivity</CardTitle></CardHeader>
+                <CardContent className="flex gap-2">
+                  <Button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/mkissa/search?q=naruto&limit=3');
+                        const data = await res.json();
+                        alert(data.success ? `API works! Found ${data.shows?.length || 0} results` : `API error: ${data.error}`);
+                      } catch (err: any) { alert(`API test failed: ${err.message}`); }
+                    }}
+                    variant="outline"
+                    className="border-gray-700 text-gray-300"
+                  >
+                    <Zap className="w-4 h-4 mr-1" /> Test Search API
+                  </Button>
+                  <Button
+                    onClick={async () => {
+                      try {
+                        const res = await fetch('/api/mkissa/streams?showId=ReooPAxPMsHM4KPMY&episode=1&type=sub');
+                        const data = await res.json();
+                        alert(data.success ? `Stream API works! ${data.streams?.length || 0} sources found` : `Error: ${data.error}`);
+                      } catch (err: any) { alert(`Stream test failed: ${err.message}`); }
+                    }}
+                    variant="outline"
+                    className="border-gray-700 text-gray-300"
+                  >
+                    <Play className="w-4 h-4 mr-1" /> Test Stream API
+                  </Button>
+                </CardContent>
+              </Card>
+            </div>
+          </TabsContent>
+
+          {/* ===== API DOCS TAB ===== */}
+          <TabsContent value="docs">
+            <div className="space-y-4">
+              <Card className="bg-gray-800/50 border-gray-700">
+                <CardHeader><CardTitle>API Endpoints</CardTitle></CardHeader>
+                <CardContent>
+                  <ScrollArea className="max-h-[70vh]">
+                    <div className="space-y-4">
+                      {[
+                        { method: 'GET', path: '/api/mkissa/search', desc: 'Search anime by query or browse by sort', params: 'q (query), sort (Recent/Popular/Random), page, limit, type (sub/dub)' },
+                        { method: 'GET', path: '/api/mkissa/show', desc: 'Get anime show details by ID', params: 'id (show ID from search)' },
+                        { method: 'GET', path: '/api/mkissa/episodes', desc: 'Get episode sources (encrypted, auto-decrypted)', params: 'showId, episode (number), type (sub/dub)' },
+                        { method: 'GET', path: '/api/mkissa/streams', desc: 'Get categorized stream URLs from episode sources', params: 'showId, episode (number), type (sub/dub)' },
+                        { method: 'GET', path: '/api/proxy/m3u8', desc: 'CORS proxy for m3u8/mp4 streams', params: 'url (target stream URL)' },
+                        { method: 'GET', path: '/api/proxy/api', desc: 'CORS proxy for AllAnime GraphQL API', params: 'Forward query params to api.allanime.day' },
+                      ].map((ep, i) => (
+                        <div key={i} className="p-3 bg-gray-900/50 rounded-lg border border-gray-700">
+                          <div className="flex items-center gap-2 mb-2">
+                            <Badge className="bg-green-700 text-xs">{ep.method}</Badge>
+                            <code className="text-sm text-green-400">{ep.path}</code>
+                          </div>
+                          <p className="text-sm text-gray-300 mb-1">{ep.desc}</p>
+                          <p className="text-xs text-gray-500">Params: {ep.params}</p>
                         </div>
                       ))}
                     </div>
-                  </div>
-                )}
+                  </ScrollArea>
+                </CardContent>
+              </Card>
 
-                {/* Proxy M3U8 URL */}
-                {result.proxyM3u8Url && (
-                  <div className="mt-4 p-3 bg-yellow-500/10 border border-yellow-500/30 rounded-lg">
-                    <span className="text-xs text-yellow-400 font-semibold block mb-1">
-                      HLS.js-ready Proxy URL
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <code className="text-xs text-yellow-300 font-mono flex-1 break-all">
-                        {result.proxyM3u8Url}
-                      </code>
-                      <PlayBtn url={result.proxyM3u8Url} title={result.meta?.title || result.title} color="yellow" />
-                      <CopyBtn text={result.proxyM3u8Url} id="proxy-master" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Raw M3U8 Content */}
-            {result?.rawM3u8 && (
-              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
-                <div className="flex items-center justify-between mb-3">
-                  <h2 className="text-lg font-bold flex items-center gap-2">
-                    <Code2 className="w-5 h-5 text-purple-400" />
-                    Raw M3U8 Playlist
-                  </h2>
-                  <div className="flex gap-2">
-                    <button
-                      onClick={() => setShowRaw(!showRaw)}
-                      className="text-sm text-zinc-400 hover:text-white transition-colors flex items-center gap-1"
-                    >
-                      {showRaw ? <><ChevronUp className="w-4 h-4" /> Hide</> : <><ChevronDown className="w-4 h-4" /> Show</>}
-                    </button>
-                    <CopyBtn text={result.rawM3u8!} id="raw-m3u8" />
-                  </div>
-                </div>
-                {showRaw && (
-                  <pre className="bg-zinc-950 rounded-lg p-4 overflow-x-auto text-xs font-mono text-green-400 whitespace-pre-wrap max-h-96 overflow-y-auto">
-                    {result.rawM3u8}
-                  </pre>
-                )}
-              </div>
-            )}
-
-            {/* Multi Source Results */}
-            {multiResults && (
-              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
-                <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-                  <Server className="w-5 h-5 text-blue-400" />
-                  All Sources Comparison
-                </h2>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {multiResults.map((mr, i) => (
-                    <div
-                      key={i}
-                      className={cn(
-                        "bg-zinc-800 rounded-lg p-4 border",
-                        mr.success ? "border-green-500/30" : "border-red-500/30"
-                      )}
-                    >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="font-semibold text-white">{mr.source}</span>
-                        <Badge className={mr.success ? "bg-green-500/20 text-green-400 border-green-500/30" : "bg-red-500/20 text-red-400 border-red-500/30"}>
-                          {mr.success ? `${mr.sources.length} streams` : "Failed"}
-                        </Badge>
-                      </div>
-                      {mr.success && mr.proxiedSources[0] && (
-                        <div className="mt-2">
-                          <p className="text-xs text-zinc-500 mb-1">Master URL (proxied):</p>
-                          <div className="flex items-center gap-2">
-                            <code className="text-xs font-mono text-blue-400 break-all flex-1">
-                              {mr.proxiedSources[0].url}
-                            </code>
-                            <PlayBtn url={mr.proxiedSources[0].url} title={mr.source} color="blue" />
-                          </div>
-                        </div>
-                      )}
-                      {mr.rawM3u8 && (
-                        <div className="mt-2">
-                          <details>
-                            <summary className="text-xs text-purple-400 cursor-pointer">Raw M3U8</summary>
-                            <pre className="text-[10px] font-mono text-green-400 mt-1 max-h-32 overflow-y-auto whitespace-pre-wrap">
-                              {mr.rawM3u8}
-                            </pre>
-                          </details>
-                        </div>
-                      )}
-                      {mr.error && <p className="text-xs text-red-400 mt-1">{mr.error}</p>}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ==================== VIDLINK TAB ==================== */}
-        {tab === "vidlink" && (
-          <div className="space-y-6">
-            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6 space-y-4">
-              <div className="flex items-center gap-2 mb-2">
-                <Link2 className="w-5 h-5 text-blue-400" />
-                <h2 className="text-lg font-bold">Vidlink M3U8 Scraper</h2>
-                <Badge className="bg-blue-500/15 text-blue-400 border-blue-500/30 text-[10px]">
-                  vidsrc / vidlink
-                </Badge>
-              </div>
-              <p className="text-sm text-zinc-400">
-                Uses the vaplayer.ru backend with the &quot;vidsrc&quot; source, which maps to the vidlink/vidsrc provider chain.
-                Returns raw m3u8 stream URLs and playlist content.
-              </p>
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="md:col-span-2">
-                  <label className="text-xs text-zinc-400 mb-1 block">TMDB ID</label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={tmdbId}
-                      onChange={(e) => setTmdbId(e.target.value)}
-                      placeholder="e.g. 1265609"
-                      className="bg-zinc-800 border-zinc-700 text-white"
-                    />
-                    <Button
-                      onClick={() => { setActiveProvider("vidlink"); scrape(); }}
-                      disabled={loading || !tmdbId}
-                      className="bg-blue-500 hover:bg-blue-600 text-white font-semibold shrink-0"
-                    >
-                      {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
-                      {loading ? "Scraping..." : "Scrape"}
-                    </Button>
-                  </div>
-                </div>
-                <div>
-                  <label className="text-xs text-zinc-400 mb-1 block">Type</label>
-                  <div className="flex gap-1">
-                    {(["movie", "tv"] as KindType[]).map((k) => (
-                      <button
-                        key={k}
-                        onClick={() => setKind(k)}
-                        className={cn(
-                          "flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors",
-                          kind === k
-                            ? "bg-blue-500/20 text-blue-400 border border-blue-500/30"
-                            : "bg-zinc-800 text-zinc-400 border border-zinc-700 hover:bg-zinc-700"
-                        )}
-                      >
-                        {k === "movie" ? <span className="flex items-center gap-1"><Film className="w-3 h-3" /> Movie</span> : <span className="flex items-center gap-1"><Tv className="w-3 h-3" /> TV</span>}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-              </div>
-
-              {kind === "tv" && (
-                <div className="flex gap-4">
-                  <div>
-                    <label className="text-xs text-zinc-400 mb-1 block">Season</label>
-                    <Input value={season} onChange={(e) => setSeason(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
-                  </div>
-                  <div>
-                    <label className="text-xs text-zinc-400 mb-1 block">Episode</label>
-                    <Input value={episode} onChange={(e) => setEpisode(e.target.value)} type="number" min="1" className="bg-zinc-800 border-zinc-700 text-white w-24" />
-                  </div>
-                </div>
-              )}
-
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => setAction("streams")}
-                  className={cn(
-                    "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
-                    action === "streams" ? "bg-blue-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-                  )}
-                >
-                  Streams Only
-                </button>
-                <button
-                  onClick={() => setAction("raw")}
-                  className={cn(
-                    "px-4 py-1.5 rounded-full text-xs font-medium transition-colors",
-                    action === "raw" ? "bg-blue-500 text-white" : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700"
-                  )}
-                >
-                  Raw M3U8
-                </button>
-              </div>
+              <Card className="bg-gray-800/50 border-gray-700">
+                <CardHeader><CardTitle>How It Works</CardTitle></CardHeader>
+                <CardContent className="text-sm text-gray-300 space-y-3">
+                  <p><strong className="text-white">1. Search/Browse:</strong> Uses AllAnime GraphQL API at api.allanime.day with persisted query hashes. Origin header set to mkissa.to.</p>
+                  <p><strong className="text-white">2. Episode Sources:</strong> API returns AES-256-CTR encrypted data. Key: SHA-256(&quot;Xot36i3lK3:v1&quot;). Auto-decrypted to get source URLs with XOR decoding.</p>
+                  <p><strong className="text-white">3. Source Types:</strong></p>
+                  <ul className="list-disc list-inside ml-4 space-y-1 text-xs">
+                    <li><span className="text-green-400 font-bold">M3U8/MP4</span> — Direct stream URLs, playable through HLS player</li>
+                    <li><span className="text-blue-400 font-bold">Iframe</span> — Embed pages (Filemoon, MP4Upload, etc.), open in browser</li>
+                    <li><span className="text-yellow-400 font-bold">CF Protected</span> — AllAnime clock endpoint, Cloudflare-protected</li>
+                  </ul>
+                  <p><strong className="text-white">4. CORS Proxy:</strong> Rewrites m3u8 playlist URLs so HLS.js can follow master → variant → segment chain. Binary segments streamed with proper Referer headers.</p>
+                </CardContent>
+              </Card>
             </div>
+          </TabsContent>
+        </Tabs>
+      </main>
 
-            {result?.success && (result.sources?.length ?? 0) > 0 && (
-              <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
-                <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
-                  <Server className="w-5 h-5 text-blue-400" />
-                  Vidlink Streams
-                  <Badge className="bg-blue-500/20 text-blue-400 border-blue-500/30">
-                    {result.sources?.length} streams
-                  </Badge>
-                </h2>
-                <div className="space-y-3">
-                  {result.sources?.map((s, i) => (
-                    <div key={i} className="bg-zinc-800 rounded-lg p-3 border border-zinc-700">
-                      <div className="flex items-center justify-between mb-2">
-                        <div className="flex items-center gap-2">
-                          <Badge className={s.type === "master" ? "bg-blue-500/20 text-blue-400 border-blue-500/30" : "bg-zinc-600/50 text-zinc-300"}>
-                            {s.type}
-                          </Badge>
-                          <span className="text-sm text-zinc-300">{s.quality}</span>
-                        </div>
-                        <div className="flex gap-1">
-                          <PlayBtn url={s.url} title={result.meta?.title || result.title} color="blue" />
-                          <CopyBtn text={s.url} id={`vl-${i}`} />
-                          <a href={s.url} target="_blank" rel="noopener noreferrer" className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors">
-                            <ExternalLink className="w-3 h-3 text-zinc-400" />
-                          </a>
-                        </div>
-                      </div>
-                      <p className="text-xs font-mono text-zinc-500 break-all">{s.url}</p>
-                    </div>
-                  ))}
-                </div>
-                {result.rawM3u8 && (
-                  <div className="mt-4">
-                    <details>
-                      <summary className="text-sm text-purple-400 cursor-pointer font-semibold">Raw M3U8 Playlist</summary>
-                      <pre className="bg-zinc-950 rounded-lg p-4 overflow-x-auto text-xs font-mono text-green-400 whitespace-pre-wrap max-h-96 overflow-y-auto mt-2">
-                        {result.rawM3u8}
-                      </pre>
-                    </details>
-                  </div>
-                )}
-                {result.proxyM3u8Url && (
-                  <div className="mt-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-lg">
-                    <span className="text-xs text-blue-400 font-semibold block mb-1">HLS.js Proxy URL</span>
-                    <div className="flex items-center gap-2">
-                      <code className="text-xs text-blue-300 font-mono flex-1 break-all">{result.proxyM3u8Url}</code>
-                      <PlayBtn url={result.proxyM3u8Url} title={result.meta?.title || result.title} color="blue" />
-                      <CopyBtn text={result.proxyM3u8Url} id="vl-proxy" />
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            {result && !result.success && result.error && (
-              <div className="bg-red-500/10 border border-red-500/30 rounded-xl p-4 text-red-400">
-                <p className="font-semibold">Error</p>
-                <p className="text-sm mt-1">{result.error}</p>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* ==================== TEST LAB TAB ==================== */}
-        {tab === "test" && (
-          <div className="space-y-6">
-            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
-              <div className="flex items-center gap-2 mb-4">
-                <Terminal className="w-5 h-5 text-green-400" />
-                <h2 className="text-lg font-bold">Test Lab</h2>
-                <Badge className="bg-green-500/15 text-green-400 border-green-500/30 text-[10px]">
-                  Quick test endpoints
-                </Badge>
-              </div>
-
-              {/* Custom URL player */}
-              <div className="mb-4 p-4 bg-zinc-800 rounded-lg border border-zinc-700">
-                <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
-                  <MonitorPlay className="w-4 h-4 text-green-400" />
-                  Play Custom m3u8 URL
-                </h3>
-                <div className="flex gap-2">
-                  <Input
-                    placeholder="Paste any m3u8 URL to test..."
-                    className="bg-zinc-900 border-zinc-600 text-white font-mono text-xs"
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        const url = (e.target as HTMLInputElement).value;
-                        if (url) playStream(url, "Custom URL");
-                      }
-                    }}
-                    id="custom-m3u8-input"
-                  />
-                  <Button
-                    onClick={() => {
-                      const input = document.getElementById("custom-m3u8-input") as HTMLInputElement;
-                      if (input?.value) playStream(input.value, "Custom URL");
-                    }}
-                    className="bg-green-500 hover:bg-green-600 text-black font-semibold shrink-0"
-                  >
-                    <Play className="w-4 h-4" />
-                  </Button>
-                </div>
-                <p className="text-[10px] text-zinc-500 mt-1">Auto-wraps through CORS proxy if it&apos;s an absolute URL</p>
-              </div>
-
-              <div className="mb-4">
-                <label className="text-xs text-zinc-400 mb-1 block">TMDB ID for tests</label>
-                <Input
-                  value={tmdbId}
-                  onChange={(e) => setTmdbId(e.target.value)}
-                  placeholder="e.g. 1265609"
-                  className="bg-zinc-800 border-zinc-700 text-white max-w-xs"
-                />
-              </div>
-
-              <div className="space-y-3">
-                {[
-                  { label: "Vidfast Full Scrape", url: `/api/vidfast?tmdb=${tmdbId}&action=scrape`, color: "yellow" },
-                  { label: "Vidfast Streams", url: `/api/vidfast?tmdb=${tmdbId}&action=streams`, color: "yellow" },
-                  { label: "Vidfast Raw M3U8", url: `/api/vidfast?tmdb=${tmdbId}&action=raw`, color: "yellow" },
-                  { label: "Vidfast Multi Source", url: `/api/vidfast?tmdb=${tmdbId}&action=multi`, color: "yellow" },
-                  { label: "Vidfast Meta Only", url: `/api/vidfast?tmdb=${tmdbId}&action=meta`, color: "yellow" },
-                  { label: "Vidlink Streams", url: `/api/vidlink?tmdb=${tmdbId}&action=streams`, color: "blue" },
-                  { label: "Vidlink Raw M3U8", url: `/api/vidlink?tmdb=${tmdbId}&action=raw`, color: "blue" },
-                  { label: "Available Sources", url: `/api/vidfast?action=sources`, color: "green" },
-                ].map((test, i) => (
-                  <TestEndpoint key={i} label={test.label} url={test.url} color={test.color} copied={copied} setCopied={setCopied} onPlay={playStream} />
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* ==================== DOCS TAB ==================== */}
-        {tab === "docs" && (
-          <div className="space-y-6">
-            <div className="bg-zinc-900 rounded-xl border border-zinc-800 p-6">
-              <div className="flex items-center gap-2 mb-6">
-                <BookOpen className="w-5 h-5 text-yellow-400" />
-                <h2 className="text-lg font-bold">API Reference</h2>
-              </div>
-
-              <div className="space-y-6">
-                <ApiSection
-                  title="Vidfast Scraper"
-                  color="yellow"
-                  endpoints={[
-                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=scrape", desc: "Full pipeline: meta + m3u8 URLs + raw playlist + proxied URLs" },
-                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=streams", desc: "Just m3u8 stream URLs (fastest)" },
-                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=raw", desc: "m3u8 URLs + raw playlist content" },
-                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=multi", desc: "Try all sources (justhd, vidsrc, auto, vidfast)" },
-                    { method: "GET", path: "/api/vidfast?tmdb=ID&action=meta", desc: "Only scrape vidfast.pro for en token + metadata" },
-                    { method: "GET", path: "/api/vidfast?action=sources", desc: "List available sources" },
-                  ]}
-                  params={[
-                    { name: "tmdb", type: "string", required: true, desc: "TMDB movie/TV ID (e.g. 1265609)" },
-                    { name: "action", type: "scrape|streams|raw|multi|meta|sources", required: false, desc: "Action to perform (default: scrape)" },
-                    { name: "kind", type: "movie|tv", required: false, desc: "Media type (default: movie)" },
-                    { name: "source", type: "auto|justhd|vidsrc|vidfast", required: false, desc: "Vaplayer source (default: auto)" },
-                    { name: "season", type: "number", required: false, desc: "Season number (TV only)" },
-                    { name: "episode", type: "number", required: false, desc: "Episode number (TV only)" },
-                  ]}
-                />
-
-                <ApiSection
-                  title="Vidlink Scraper"
-                  color="blue"
-                  endpoints={[
-                    { method: "GET", path: "/api/vidlink?tmdb=ID&action=streams", desc: "Vidlink/vidsrc m3u8 stream URLs" },
-                    { method: "GET", path: "/api/vidlink?tmdb=ID&action=raw", desc: "Vidlink m3u8 + raw playlist content" },
-                  ]}
-                  params={[
-                    { name: "tmdb", type: "string", required: true, desc: "TMDB movie/TV ID" },
-                    { name: "action", type: "streams|raw", required: false, desc: "Action (default: streams)" },
-                    { name: "kind", type: "movie|tv", required: false, desc: "Media type (default: movie)" },
-                    { name: "source", type: "vidsrc|auto|justhd|vidfast", required: false, desc: "Vaplayer source (default: vidsrc)" },
-                    { name: "season", type: "number", required: false, desc: "Season (TV only)" },
-                    { name: "episode", type: "number", required: false, desc: "Episode (TV only)" },
-                  ]}
-                />
-
-                <ApiSection
-                  title="CORS Proxy"
-                  color="green"
-                  endpoints={[
-                    { method: "GET", path: "/api/proxy/m3u8?url={encoded}", desc: "Proxy any m3u8/segment URL with CORS headers and playlist URL rewriting" },
-                  ]}
-                  params={[
-                    { name: "url", type: "string", required: true, desc: "Encoded upstream URL to proxy" },
-                    { name: "referer", type: "string", required: false, desc: "Override Referer header sent upstream" },
-                    { name: "format", type: "m3u8|vtt", required: false, desc: "Force content format detection" },
-                  ]}
-                />
-
-                <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
-                  <h3 className="font-semibold text-white mb-2 flex items-center gap-2">
-                    <MonitorPlay className="w-4 h-4 text-green-400" />
-                    Built-in Player
-                  </h3>
-                  <div className="space-y-2 text-sm text-zinc-300">
-                    <p>Every m3u8 URL has a <span className="text-green-400">play button</span> next to it. Click it to test the stream in the built-in HLS.js player.</p>
-                    <p><span className="text-yellow-400">Direct URLs</span> are auto-wrapped through the CORS proxy.</p>
-                    <p><span className="text-blue-400">Proxied URLs</span> (starting with <code className="text-xs">/api/proxy/m3u8</code>) are played directly.</p>
-                    <p>The Test Lab also has a <span className="text-green-400">custom URL input</span> — paste any m3u8 URL and hit Play.</p>
-                  </div>
-                </div>
-
-                <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
-                  <h3 className="font-semibold text-white mb-2 flex items-center gap-2">
-                    <Globe className="w-4 h-4 text-yellow-400" />
-                    HLS.js Usage (external)
-                  </h3>
-                  <pre className="bg-zinc-950 rounded-lg p-4 text-xs font-mono text-green-400 overflow-x-auto">
-{`// Quick start with HLS.js
-import Hls from 'hls.js';
-
-const hls = new Hls();
-hls.loadSource('/api/proxy/m3u8?url=' + encodeURIComponent(masterUrl));
-hls.attachMedia(videoElement);
-
-// Or use the proxied URL directly from the API response:
-// result.proxiedSources[0].url → drop into HLS.js`}
-                  </pre>
-                </div>
-
-                <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
-                  <h3 className="font-semibold text-white mb-2">How It Works</h3>
-                  <div className="space-y-2 text-sm text-zinc-300">
-                    <p><span className="text-yellow-400 font-mono">1.</span> Fetch vidfast.pro/movie/{"{tmdb_id}"} → parse RSC payload → extract encrypted <code className="text-yellow-300">en</code> token</p>
-                    <p><span className="text-yellow-400 font-mono">2.</span> Call streamdata.vaplayer.ru/api.php with TMDB ID → get m3u8 stream URLs</p>
-                    <p><span className="text-yellow-400 font-mono">3.</span> Return raw m3u8 URLs + playlist content through our CORS proxy</p>
-                    <p><span className="text-zinc-500 text-xs mt-2 block">The vaplayer.ru API is the shared backend for vidfast.pro, vidsrc.pm, nextgencloudfabric.com, and other VA Player sites.</span></p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  Sub-components                                                     */
-/* ------------------------------------------------------------------ */
-
-function TestEndpoint({ label, url, color, copied, setCopied, onPlay }: {
-  label: string;
-  url: string;
-  color: string;
-  copied: string | null;
-  setCopied: (v: string | null) => void;
-  onPlay: (url: string, title?: string) => void;
-}) {
-  const [result, setResult] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [showResult, setShowResult] = useState(false);
-
-  const run = async () => {
-    setLoading(true);
-    setResult(null);
-    try {
-      const res = await fetch(url);
-      const data = await res.json();
-      setResult(JSON.stringify(data, null, 2));
-      setShowResult(true);
-    } catch (err) {
-      setResult(JSON.stringify({ error: err instanceof Error ? err.message : "Failed" }, null, 2));
-      setShowResult(true);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const colorClass = color === "yellow" ? "text-yellow-400" : color === "blue" ? "text-blue-400" : "text-green-400";
-  const bgClass = color === "yellow" ? "bg-yellow-500/15 border-yellow-500/30" : color === "blue" ? "bg-blue-500/15 border-blue-500/30" : "bg-green-500/15 border-green-500/30";
-
-  return (
-    <div className="bg-zinc-800 rounded-lg p-4 border border-zinc-700">
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center gap-2">
-          <Badge className={bgClass + " " + colorClass}>{label}</Badge>
+      <footer className="border-t border-gray-800 py-4 mt-8">
+        <div className="max-w-7xl mx-auto px-4 text-center">
+          <p className="text-xs text-gray-600">Mkissa Scraper · mkissa.to API · AES-256-CTR Decryption · Vercel Ready</p>
         </div>
-        <div className="flex gap-1">
-          <button
-            onClick={() => { navigator.clipboard.writeText(url); setCopied(`test-${label}`); setTimeout(() => setCopied(null), 2000); }}
-            className="p-1.5 rounded-md bg-zinc-700 hover:bg-zinc-600 transition-colors"
-            title="Copy URL"
-          >
-            {copied === `test-${label}` ? <Check className="w-3 h-3 text-green-400" /> : <Copy className="w-3 h-3 text-zinc-400" />}
-          </button>
-          <button
-            onClick={run}
-            disabled={loading}
-            className="px-3 py-1 rounded-md bg-green-500/20 text-green-400 text-xs font-medium hover:bg-green-500/30 transition-colors disabled:opacity-50"
-          >
-            {loading ? <Loader2 className="w-3 h-3 animate-spin inline" /> : "Run"}
-          </button>
-        </div>
-      </div>
-      <code className="text-xs font-mono text-zinc-400 break-all block">{url}</code>
-      {result && showResult && (
-        <div className="mt-3">
-          <div className="flex items-center justify-between mb-1">
-            <span className="text-xs text-zinc-500">Response</span>
-            <div className="flex items-center gap-1">
-              {(() => {
-                try {
-                  const data = JSON.parse(result);
-                  // Find any m3u8 URL in the response that we can play
-                  const masterUrl = data.masterUrl || data.proxyUrl || data.proxyM3u8Url ||
-                    (data.sources && data.sources[0]?.url) ||
-                    (data.proxiedSources && data.proxiedSources[0]?.url);
-                  if (masterUrl) {
-                    return (
-                      <button
-                        onClick={() => onPlay(masterUrl, label)}
-                        className="flex items-center gap-1 text-xs text-green-400 hover:text-green-300 transition-colors"
-                      >
-                        <MonitorPlay className="w-3 h-3" /> Play
-                      </button>
-                    );
-                  }
-                } catch { /* ignore */ }
-                return null;
-              })()}
-              <button onClick={() => setShowResult(false)} className="text-xs text-zinc-500 hover:text-zinc-300">Hide</button>
-            </div>
-          </div>
-          <pre className="bg-zinc-950 rounded-lg p-3 overflow-x-auto text-[10px] font-mono text-green-400 whitespace-pre-wrap max-h-64 overflow-y-auto">
-            {result}
-          </pre>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ApiSection({ title, color, endpoints, params }: {
-  title: string;
-  color: string;
-  endpoints: { method: string; path: string; desc: string }[];
-  params: { name: string; type: string; required: boolean; desc: string }[];
-}) {
-  const colorClass = color === "yellow" ? "text-yellow-400 border-yellow-500/30" : color === "blue" ? "text-blue-400 border-blue-500/30" : "text-green-400 border-green-500/30";
-
-  return (
-    <div>
-      <h3 className="font-semibold text-white mb-3 flex items-center gap-2">
-        <Badge className={colorClass}>{title}</Badge>
-      </h3>
-      <div className="space-y-2 mb-4">
-        {endpoints.map((ep, i) => (
-          <div key={i} className="flex items-start gap-3 bg-zinc-800/50 rounded-lg px-4 py-2">
-            <Badge variant="outline" className="text-green-400 border-green-500/30 text-[10px] shrink-0 mt-0.5">
-              {ep.method}
-            </Badge>
-            <div>
-              <code className="text-xs font-mono text-green-400">{ep.path}</code>
-              <p className="text-xs text-zinc-500 mt-0.5">{ep.desc}</p>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="bg-zinc-800/30 rounded-lg p-3">
-        <p className="text-xs text-zinc-500 mb-2 font-semibold">Parameters</p>
-        <div className="space-y-1">
-          {params.map((p, i) => (
-            <div key={i} className="flex items-start gap-2 text-xs">
-              <code className="text-yellow-300 font-mono shrink-0">{p.name}</code>
-              <span className="text-zinc-500 shrink-0">{p.type}</span>
-              {p.required && <span className="text-red-400 shrink-0">required</span>}
-              <span className="text-zinc-400">{p.desc}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+      </footer>
     </div>
   );
 }

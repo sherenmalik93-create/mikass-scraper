@@ -1,16 +1,24 @@
 {
-  "$schema": "https://openapi.vercel.sh/vercel.json",
-  "framework": "nextjs",
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Access-Control-Allow-Origin", "value": "*" },
+        { "key": "Access-Control-Allow-Methods", "value": "GET, OPTIONS" },
+        { "key": "Access-Control-Allow-Headers", "value": "*" }
+      ]
+    }
+  ],
   "functions": {
-    "src/app/api/proxy/m3u8/route.ts": {
+    "api/proxy/m3u8/route": {
       "maxDuration": 60,
       "memory": 1024
     },
-    "src/app/api/vidfast/route.ts": {
-      "maxDuration": 60,
+    "api/mkissa/streams/route": {
+      "maxDuration": 30,
       "memory": 512
     },
-    "src/app/api/vidlink/route.ts": {
+    "api/mkissa/episodes/route": {
       "maxDuration": 30,
       "memory": 512
     }
